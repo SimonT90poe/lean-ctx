@@ -26,18 +26,6 @@ fn per_file_lock(path: &str) -> Arc<Mutex<()>> {
     crate::core::path_locks::per_file_lock(path)
 }
 
-/// How long a read waits for the global cache write lock before it degrades
-/// to an uncached read. Unit tests cap it so the degradation path runs
-/// without a multi-second stall.
-fn cache_lock_deadline(secs: u64) -> std::time::Duration {
-    let deadline = std::time::Duration::from_secs(secs);
-    if cfg!(test) {
-        deadline.min(std::time::Duration::from_secs(2))
-    } else {
-        deadline
-    }
-}
-
 pub struct CtxReadTool;
 
 impl McpTool for CtxReadTool {
@@ -661,87 +649,30 @@ impl CtxReadTool {
                     // 2b-i: Brief write lock — prepare cache state, resolve
                     // mode, check for hits. Sub-millisecond: HashMap lookups,
                     // staleness checks, raw-content storage for new files.
-                    #[allow(clippy::large_enum_variant)]
-                    enum PrepareOutcome {
-                        Hit(
-                            String,
-                            String,
-                            usize,
-                            bool,
-                            Option<String>,
-                            (u64, u64),
-                            ReuseOutcome,
-                        ),
-                        Compute {
-                            file_ref: String,
-                            resolved_mode: String,
-                            content: String,
-                            original_tokens: usize,
-                            reuse_outcome: ReuseOutcome,
-                            /// False when the prepare lock was never acquired:
-                            /// the result carries the `F?` placeholder ref and
-                            /// must not be written into the render cache.
-                            cacheable: bool,
-                        },
-                    }
-
                     let outcome = 'prepare: {
                         let Some(mut cache) = acquire_write!(10, "prepare 10s") else {
-                            let (raw, counted) = match preread {
-                                Some(c) if !c.is_empty() => (c, preread_tokens),
-                                _ => match crate::tools::ctx_read::read_file_lossy(&path_owned) {
-                                    Ok(c) if !c.is_empty() => (c, None),
-                                    Ok(_) => {
-                                        let _ = tx.send((
-                                            format!("File is empty: {path_owned}"),
-                                            "error".into(),
-                                            0,
-                                            false,
-                                            None,
-                                            (0, 0),
-                                            ReuseOutcome::Cold,
-                                        ));
-                                        return;
-                                    }
-                                    Err(e) => {
-                                        let _ = tx.send((
-                                            format!("Cannot read file: {path_owned}: {e}"),
-                                            "error".into(),
-                                            0,
-                                            false,
-                                            None,
-                                            (0, 0),
-                                            ReuseOutcome::Cold,
-                                        ));
-                                        return;
-                                    }
-                                },
-                            };
-                            let original_tokens =
-                                counted.unwrap_or_else(|| crate::core::tokens::count_tokens(&raw));
-                            // `diff` needs the cached baseline, which is exactly
-                            // what is out of reach here.
-                            let resolved_mode = match mode_eff.as_str() {
-                                "auto" => tuning.auto_density_mode().unwrap_or_else(|| {
-                                    crate::tools::ctx_read::resolve_auto_mode(
+                            match prepare_uncached(
+                                preread,
+                                preread_tokens,
+                                &path_owned,
+                                &mode_eff,
+                                &tuning,
+                                task_ref,
+                            ) {
+                                Ok(uncached) => break 'prepare uncached,
+                                Err(msg) => {
+                                    let _ = tx.send((
+                                        msg,
+                                        "error".into(),
+                                        0,
+                                        false,
                                         None,
-                                        &path_owned,
-                                        original_tokens,
-                                        Some(raw.lines().count()),
-                                        task_ref,
-                                    )
-                                }),
-                                "diff" => "full".to_string(),
-                                _ => mode_eff.clone(),
-                            };
-                            break 'prepare PrepareOutcome::Compute {
-                                file_ref: "F?".to_string(),
-                                resolved_mode,
-                                content: raw,
-                                original_tokens,
-                                reuse_outcome: ReuseOutcome::Cold,
-                                cacheable: false,
-                            };
+                                        (0, 0),
+                                        ReuseOutcome::Cold,
+                                    ));
+                                    return;
+                                }
+                            }
                         };
                         let mut reuse_outcome = if cache_policy_bypassed {
                             ReuseOutcome::PolicyBypass
@@ -1539,6 +1470,11 @@ pub(crate) use helpers::task_intent_steers_read;
 use helpers::apply_verdict;
 use helpers::{auto_degrade_read_mode, extract_file_summary, record_attribution_result};
 
+// #660 LOC gate: cache-lock deadline and the uncached fallback.
+#[path = "ctx_read_uncached.rs"]
+mod uncached;
+use uncached::{PrepareOutcome, cache_lock_deadline, prepare_uncached};
+
 #[path = "ctx_read_window.rs"]
 mod window;
 #[allow(unused_imports)]
@@ -1559,7 +1495,6 @@ mod security_tests;
 
 // #660 LOC gate: repo-param tests split out to keep this file under the line
 // cap — see `ctx_read_repo_param_tests.rs`.
-
 #[cfg(test)]
 #[path = "ctx_read_repo_param_tests.rs"]
 mod repo_param_tests;
