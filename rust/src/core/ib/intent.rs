@@ -83,7 +83,7 @@ pub fn classify_intent(session: &SessionState) -> TaskIntent {
     TaskIntent::Unknown
 }
 
-fn classify_text(text: &str) -> Option<TaskIntent> {
+pub(crate) fn classify_text(text: &str) -> Option<TaskIntent> {
     INTENT_KEYWORDS
         .iter()
         .find_map(|(intent, keywords)| contains_keyword(text, keywords).then_some(*intent))
