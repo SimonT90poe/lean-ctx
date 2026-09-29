@@ -99,20 +99,7 @@ struct CapturedFormatter {
 #[derive(Default)]
 struct FormatterCleanup {
     #[cfg(windows)]
-    job: Option<FormatterJob>,
-}
-
-#[cfg(windows)]
-struct FormatterJob(windows_sys::Win32::Foundation::HANDLE);
-
-#[cfg(windows)]
-impl Drop for FormatterJob {
-    fn drop(&mut self) {
-        // SAFETY: this instance exclusively owns the CreateJobObjectW handle.
-        unsafe {
-            windows_sys::Win32::Foundation::CloseHandle(self.0);
-        }
-    }
+    job: Option<crate::shell::process_tree::job::ProcessJob>,
 }
 
 fn spawn_command_formatter(
@@ -179,111 +166,12 @@ fn spawn_command_formatter(
 
 #[cfg(windows)]
 fn formatter_cleanup(child: &std::process::Child, bin: &str) -> Result<FormatterCleanup, String> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-        SetInformationJobObject,
-    };
+    use crate::shell::process_tree::job;
 
-    // SAFETY: null attributes/name create a private job owned by FormatterJob.
-    let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-    if handle.is_null() {
-        return Err(format!(
-            "failed to create formatter job for '{bin}': {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let job = FormatterJob(handle);
-    let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    // SAFETY: limits has the exact structure and size required by this info class.
-    let configured = unsafe {
-        SetInformationJobObject(
-            job.0,
-            JobObjectExtendedLimitInformation,
-            std::ptr::from_ref(&limits).cast(),
-            std::mem::size_of_val(&limits) as u32,
-        )
-    };
-    if configured == 0 {
-        return Err(format!(
-            "failed to configure formatter job for '{bin}': {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    // SAFETY: Child owns a live process handle for the formatter process.
-    let assigned = unsafe { AssignProcessToJobObject(job.0, child.as_raw_handle() as _) };
-    if assigned == 0 {
-        return Err(format!(
-            "failed to assign formatter '{bin}' to its job: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    resume_formatter_threads(child.id(), bin)?;
+    let job =
+        job::ProcessJob::assign(child).map_err(|error| format!("formatter '{bin}': {error}"))?;
+    job::resume(child.id()).map_err(|error| format!("formatter '{bin}': {error}"))?;
     Ok(FormatterCleanup { job: Some(job) })
-}
-
-#[cfg(windows)]
-fn resume_formatter_threads(process_id: u32, bin: &str) -> Result<(), String> {
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
-    };
-    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
-
-    // SAFETY: snapshot handle is closed on every return path below.
-    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
-    if snapshot == INVALID_HANDLE_VALUE {
-        return Err(format!(
-            "failed to inspect suspended formatter '{bin}' threads: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let mut entry = THREADENTRY32 {
-        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
-        ..THREADENTRY32::default()
-    };
-    // SAFETY: snapshot and entry are valid for ToolHelp thread enumeration.
-    let mut has_entry = unsafe { Thread32First(snapshot, &mut entry) } != 0;
-    let mut resumed = false;
-    let result = loop {
-        if !has_entry {
-            break if resumed {
-                Ok(())
-            } else {
-                Err(format!(
-                    "suspended formatter '{bin}' exposed no resumable thread"
-                ))
-            };
-        }
-        if entry.th32OwnerProcessID == process_id {
-            // SAFETY: entry names a thread owned by the suspended child process.
-            let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
-            if thread.is_null() {
-                break Err(format!(
-                    "failed to open suspended formatter '{bin}' thread: {}",
-                    std::io::Error::last_os_error()
-                ));
-            }
-            // SAFETY: thread is a live handle with THREAD_SUSPEND_RESUME access.
-            let resume_result = unsafe { ResumeThread(thread) };
-            // SAFETY: this scope owns the OpenThread handle.
-            unsafe { CloseHandle(thread) };
-            if resume_result == u32::MAX {
-                break Err(format!(
-                    "failed to resume formatter '{bin}' thread: {}",
-                    std::io::Error::last_os_error()
-                ));
-            }
-            resumed = true;
-        }
-        // SAFETY: snapshot and entry remain valid until CloseHandle below.
-        has_entry = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
-    };
-    // SAFETY: this scope owns the ToolHelp snapshot handle.
-    unsafe { CloseHandle(snapshot) };
-    result
 }
 
 #[cfg(not(windows))]

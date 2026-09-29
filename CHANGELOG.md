@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — Windows: a timed-out or cancelled command no longer leaves processes behind (#1920)
+
+- On Windows, `ctx_shell`, `ctx_execute` and the sandbox only ended the shell
+  itself on timeout or cancel. A process the shell had started, such as the
+  `python -` behind a heredoc, kept running on its own and could spin a core
+  for hours. Every command now runs in a private job object: a timeout or
+  cancel ends the whole process tree, and the tree also ends when lean-ctx
+  exits unexpectedly. A command that exits normally still leaves deliberately
+  started background processes running, as on Unix.
+
 ### Fixed — hook rewrites no longer hide content from agents (#1916, #1917, #1918)
 
 - #1916: a subagent's first read of a file its parent (or a sibling) already
