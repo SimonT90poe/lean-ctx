@@ -15,6 +15,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   exits unexpectedly. A command that exits normally still leaves deliberately
   started background processes running, as on Unix.
 
+### Fixed — integration tests no longer touch the developer's real `~/.lean-ctx`
+
+- The merged integration-test binary links the library without `cfg(test)`,
+  so the unit-test data-dir sandbox and scope guard did not apply: every local
+  `cargo test --test main` wrote stats, metering and telemetry identity into
+  the real data dir, and read the live `active_transcript.json` of the agent
+  session running it. That switched read-cache stubs on and made tests fail
+  locally that pass in CI. A pre-`main` constructor now points the binary at a
+  per-process temp data dir (unless `LEAN_CTX_DATA_DIR` is set) and removes the
+  ambient agent-scope variables.
+
 ### Fixed — hook rewrites no longer hide content from agents (#1916, #1917, #1918)
 
 - #1916: a subagent's first read of a file its parent (or a sibling) already
