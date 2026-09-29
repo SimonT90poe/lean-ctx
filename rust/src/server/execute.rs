@@ -109,7 +109,8 @@ pub(crate) fn execute_command_with_env(
 /// Execute a command under the normal shell policy, with an optional cooperative
 /// cancellation signal used by explicit background jobs. The signal is checked
 /// by the same watchdog that enforces `timeout_ms`, so cancellation kills the
-/// complete Unix process group rather than only the shell leader.
+/// complete process tree — the Unix session or the Windows job — rather than
+/// only the shell leader.
 ///
 /// `idle_keyed` turns `timeout_ms` into an *idle* budget instead of a wall-clock
 /// one: the clock resets whenever the child produces new bytes (#1113/#1173). A
@@ -237,9 +238,17 @@ pub(crate) fn execute_command_with_env_cancellable(
             });
         }
     }
+    // Windows has no process group to kill: contain the tree in a job object
+    // instead, so a timeout or cancel ends the `python -` a heredoc started
+    // rather than only its shell (#1920).
+    crate::shell::process_tree::ProcessTree::prepare(&mut cmd);
 
     let mut child = match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
         Ok(c) => c,
+        Err(e) => return (format!("ERROR: {e}"), 1),
+    };
+    let tree = match crate::shell::process_tree::ProcessTree::start(&mut child) {
+        Ok(tree) => tree,
         Err(e) => return (format!("ERROR: {e}"), 1),
     };
     // Stream each pipe into a shared, cap-bounded buffer that the main thread can
@@ -261,7 +270,7 @@ pub(crate) fn execute_command_with_env_cancellable(
             Ok(Some(status)) => break (crate::shell::exit_status::exit_code(status), false, false),
             Ok(None) => {
                 if cancel.is_some_and(|signal| signal.load(std::sync::atomic::Ordering::Acquire)) {
-                    kill_timed_out_child(&mut child);
+                    tree.kill(&mut child);
                     let _ = child.wait();
                     break (130, false, true);
                 }
@@ -298,15 +307,21 @@ pub(crate) fn execute_command_with_env_cancellable(
                 };
                 if idle_for >= timeout || hard_deadline.is_some_and(|d| Instant::now() >= d) {
                     still_running = running_segments(&child, &normalized_cmd);
-                    kill_timed_out_child(&mut child);
+                    tree.kill(&mut child);
                     let _ = child.wait();
                     break (124, true, false);
                 }
                 std::thread::sleep(Duration::from_millis(25));
             }
-            Err(_) => break (1, false, false),
+            Err(_) => {
+                tree.kill(&mut child);
+                break (1, false, false);
+            }
         }
     };
+    // A command that exited on its own keeps what it deliberately left running,
+    // as the Unix session does; a killed tree has nothing left to release.
+    tree.release();
 
     // Bounded grace period for the readers to reach EOF, but always read the
     // shared buffers afterwards so output is never silently lost (#945). A reader
@@ -402,21 +417,6 @@ pub(crate) fn execute_command_with_env_cancellable(
     }
 
     (text, code)
-}
-
-/// Kill a timed-out command and every descendant that inherited its pipes.
-/// The child is a process-group leader on Unix, so killing only the shell would
-/// otherwise leave grandchildren alive and readers unable to reach EOF (#995).
-fn kill_timed_out_child(child: &mut std::process::Child) {
-    #[cfg(unix)]
-    {
-        let pgid = child.id() as libc::pid_t;
-        if pgid > 0 {
-            // SAFETY: killpg is a plain syscall; a stale group simply yields ESRCH.
-            unsafe { libc::killpg(pgid, libc::SIGKILL) };
-        }
-    }
-    let _ = child.kill();
 }
 
 /// Shared, cap-bounded capture buffer for one child pipe. The reader thread

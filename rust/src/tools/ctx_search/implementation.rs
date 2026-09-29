@@ -13,6 +13,13 @@ use crate::core::tokens::count_tokens;
 use crate::tools::CrpMode;
 
 pub(crate) const MAX_FILE_SIZE: u64 = 512_000;
+/// Size cap when `path` names one regular file (#1917). [`MAX_FILE_SIZE`]
+/// bounds a directory walk; a file the caller named explicitly is the whole
+/// question, so skipping it would turn "not searched" into "0 matches". This
+/// cap only guards memory against pathological inputs.
+const MAX_EXPLICIT_FILE_SIZE: u64 = 64 * 1024 * 1024;
+/// How many size-skipped files the notes name before collapsing to `+N more`.
+const MAX_NAMED_SKIPS: usize = 3;
 pub(crate) const MAX_WALK_DEPTH: usize = 20;
 const MAX_MATCH_LINE_WIDTH: usize = 150;
 
@@ -168,12 +175,20 @@ pub fn handle_filtered(
     if let Some(err) = crate::tools::walk_guard::deny_unsafe_walk_root(dir) {
         return SearchOutcome::error(err);
     }
+    let size_limit = if std::fs::metadata(root).is_ok_and(|m| m.is_file()) {
+        MAX_EXPLICIT_FILE_SIZE
+    } else {
+        MAX_FILE_SIZE
+    };
 
     let mut files: Vec<PathBuf> = Vec::new();
     let mut matches = Vec::new();
     let mut raw_tokens_accum: usize = 0;
     let mut files_searched = 0u32;
     let mut files_skipped_size = 0u32;
+    // Which files the size cap skipped, so the note names them instead of only
+    // counting them (#1917).
+    let mut skipped_size_files: Vec<String> = Vec::new();
     let mut files_skipped_encoding = 0u32;
     let mut skipped_boundary_files: Vec<(String, &'static str)> = Vec::new();
     let mut files_skipped_special = 0u32;
@@ -308,8 +323,14 @@ pub fn handle_filtered(
                 files_skipped_special += 1;
                 continue;
             }
-            Ok(meta) if meta.len() > MAX_FILE_SIZE => {
+            Ok(meta) if meta.len() > size_limit => {
                 files_skipped_size += 1;
+                if skipped_size_files.len() < MAX_NAMED_SKIPS {
+                    skipped_size_files.push(protocol::shorten_path_relative(
+                        &path.to_string_lossy(),
+                        &root_str,
+                    ));
+                }
                 continue;
             }
             Ok(meta) => crate::core::content_cache::FileState::from_metadata(&meta),
@@ -337,7 +358,11 @@ pub fn handle_filtered(
                     continue;
                 };
                 let arc: std::sync::Arc<str> = std::sync::Arc::from(text);
-                if let Some(s) = state {
+                // An explicitly named file above the walk cap is read once and
+                // not published: it would evict the whole shared cache.
+                if let Some(s) = state
+                    && arc.len() as u64 <= MAX_FILE_SIZE
+                {
                     crate::core::content_cache::insert(path, s, std::sync::Arc::clone(&arc));
                 }
                 arc
@@ -418,7 +443,10 @@ pub fn handle_filtered(
     if matches.is_empty() {
         let mut msg = format!("0 matches for '{pattern}' in {files_searched} files");
         if files_skipped_size > 0 {
-            msg.push_str(&format!(" ({files_skipped_size} large files skipped)"));
+            msg.push_str(&format!(
+                " ({files_skipped_size} large files skipped: {})",
+                name_skipped(&skipped_size_files, files_skipped_size)
+            ));
         }
         if files_skipped_encoding > 0 {
             msg.push_str(&format!(
@@ -490,7 +518,10 @@ pub fn handle_filtered(
     result.push_str(&matches.join("\n"));
 
     if files_skipped_size > 0 {
-        result.push_str(&format!("\n({files_skipped_size} files >512KB skipped)"));
+        result.push_str(&format!(
+            "\n({files_skipped_size} files >512KB skipped: {})",
+            name_skipped(&skipped_size_files, files_skipped_size)
+        ));
     }
     if files_skipped_encoding > 0 {
         result.push_str(&format!(
@@ -559,6 +590,17 @@ pub fn handle_filtered(
     }
 
     SearchOutcome::from_observed(result, raw_tokens_accum)
+}
+
+/// `a.log, b.log, +3 more` — the size-skipped files by name (#1917), so a
+/// skipped target is never mistaken for a searched one.
+fn name_skipped(named: &[String], total: u32) -> String {
+    let mut out = named.join(", ");
+    let rest = (total as usize).saturating_sub(named.len());
+    if rest > 0 {
+        out.push_str(&format!(", +{rest} more"));
+    }
+    out
 }
 
 /// Render boundary-skip audit note (#1481): paths + reason codes, capped at 10.

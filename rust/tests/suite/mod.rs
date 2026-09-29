@@ -4,6 +4,9 @@
 //! unless the test mutates process env (set_var) or depends on exclusive
 //! process-global state (Config cache, graph-idx lock): those need their own
 //! process and stay as standalone tests/*.rs binaries.
+//!
+//! The whole binary runs against a throwaway data dir with the ambient agent
+//! scope removed — see `hermetic_env`.
 
 mod adversarial_compression;
 mod benchmark_compare_integration;
@@ -43,6 +46,7 @@ mod gateway_e2e;
 mod glob_cli_556;
 mod graph_export_contract;
 mod hardening_ir_traits;
+mod hermetic_env;
 mod hn_hardening_scenarios;
 mod hook_connect_only_566;
 mod http_server_streamable;

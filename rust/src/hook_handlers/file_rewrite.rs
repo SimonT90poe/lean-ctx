@@ -371,12 +371,37 @@ pub(super) fn direct_rewrite(cmd: &str, binary: &str) -> Option<String> {
         .or_else(|| rewrite_dir_list_command(cmd, binary))
 }
 
-/// `$` or `` ` `` anywhere in the command. The tokenizer that feeds the direct
+/// `$` or `` ` `` anywhere in the command, or an unquoted glob/brace
+/// metacharacter (`*`, `?`, `[`, `{`). The tokenizer that feeds the direct
 /// rewrites drops the quotes, so it cannot tell `"$HOME"` (expand) from
-/// `'$HOME'` (literal). Such commands take the `-c` wrap, which hands the
-/// original text to a shell unchanged (#1862).
+/// `'$HOME'` (literal), and the rewrites re-quote every path — which turns a
+/// glob the calling shell would have expanded into a literal, missing path
+/// (#1918). Such commands take the `-c` wrap, which hands the original text to
+/// a shell unchanged (#1862). Quoted metacharacters (`grep -n 'a.*b' f`) are
+/// literal to the shell too, so they keep the direct rewrite.
 fn has_shell_expansion(cmd: &str) -> bool {
-    cmd.contains(['$', '`'])
+    cmd.contains(['$', '`']) || has_unquoted_glob(cmd)
+}
+
+/// True when `cmd` contains `*`, `?`, `[` or `{` outside single/double quotes
+/// and not backslash-escaped — i.e. a word the shell would glob or
+/// brace-expand.
+fn has_unquoted_glob(cmd: &str) -> bool {
+    let mut single = false;
+    let mut double = false;
+    let mut chars = cmd.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if !single => {
+                chars.next();
+            }
+            '\'' if !double => single = !single,
+            '"' if !single => double = !double,
+            '*' | '?' | '[' | '{' if !single && !double => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Rewrites cat/head/tail to lean-ctx read with appropriate arguments.

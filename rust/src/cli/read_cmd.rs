@@ -601,8 +601,9 @@ pub fn cmd_grep(args: &[String]) {
         {
             let out = super::common::filter_daemon_output(&out);
             println!("{out}");
-            if out.trim_start().starts_with("0 matches") {
-                std::process::exit(1);
+            let code = grep_exit_status(&out);
+            if code != 0 {
+                std::process::exit(code);
             }
             return;
         }
@@ -633,8 +634,30 @@ pub fn cmd_grep(args: &[String]) {
         &out,
         search_start.elapsed(),
     );
-    if outcome.modeled_baseline == 0 && out.trim_start().starts_with("0 matches") {
-        std::process::exit(1);
+    let code = grep_exit_status(&out);
+    if code != 0 {
+        std::process::exit(code);
+    }
+}
+
+/// grep-compatible exit status for `lean-ctx grep` output (#1917).
+///
+/// `0` = matches found, `1` = searched everything and found nothing,
+/// `2` = error or an incomplete search (files skipped, time budget hit).
+/// A plain `1` after skipping files would tell scripts and agents "not
+/// present" when the content was never examined.
+fn grep_exit_status(out: &str) -> i32 {
+    let out = out.trim_start();
+    if out.starts_with("ERROR") {
+        return 2;
+    }
+    if !out.starts_with("0 matches") {
+        return 0;
+    }
+    if out.contains("skipped") || out.contains("stopped") {
+        2
+    } else {
+        1
     }
 }
 
@@ -1082,5 +1105,39 @@ mod crp_parity_tests {
         push_signature_lines(&mut tdd, &refs, CrpMode::Tdd, "", false);
         assert!(tdd.contains("λ+count_source"), "{tdd}");
         assert!(!tdd.contains("fn pub count_source"), "{tdd}");
+    }
+}
+
+/// #1917: `lean-ctx grep` must not report "not found" (exit 1) when it never
+/// looked at part of the corpus.
+#[cfg(test)]
+mod grep_exit_status_tests {
+    use super::grep_exit_status;
+
+    #[test]
+    fn matches_exit_zero() {
+        assert_eq!(grep_exit_status("3 matches in 1 files:\nsrc/a.rs:1 x"), 0);
+    }
+
+    #[test]
+    fn complete_miss_exits_one() {
+        assert_eq!(grep_exit_status("0 matches for 'x' in 12 files"), 1);
+    }
+
+    #[test]
+    fn incomplete_miss_exits_two() {
+        for out in [
+            "0 matches for 'x' in 1 files (1 large files skipped: big.log)",
+            "0 matches for 'x' in 4 files\n(2 files skipped: binary/encoding)",
+            "0 matches for 'x' in 9 files (search stopped at the time budget)",
+        ] {
+            assert_eq!(grep_exit_status(out), 2, "{out}");
+        }
+    }
+
+    #[test]
+    fn errors_exit_two() {
+        assert_eq!(grep_exit_status("ERROR: /nope does not exist"), 2);
+        assert_eq!(grep_exit_status("  ERROR: refusing to scan /"), 2);
     }
 }

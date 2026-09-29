@@ -24,6 +24,9 @@
 //! - Replace only when the stub is **strictly smaller** than the original text.
 //! - Windowed reads (`offset`/`limit`) key separately — a different window is a
 //!   first read.
+//! - Subagents (`agent_id` in the payload) key separately from the main
+//!   conversation and from each other: they share the parent's `session_id` but
+//!   start with an empty context window (#1916).
 //! - No `session_id` → never stub (a cross-session record could otherwise
 //!   claim content this conversation has never seen).
 //! - Compaction wipes the session's records (see [`purge_session`], wired to the
@@ -74,6 +77,14 @@ fn compute_read_dedup(input: &str) -> Option<String> {
     let tool_input = payload::resolve_tool_args(&v);
     let (_, path) = payload::resolve_path_field(tool_input.as_ref(), payload::READ_PATH_FIELDS)?;
     let session_id = v.get("session_id").and_then(|s| s.as_str())?.to_string();
+    // Claude Code runs subagents under the parent's `session_id` and tells them
+    // apart only by `agent_id` (#1916). A subagent starts with a fresh context
+    // window, so its reads must never match records of the parent or of a
+    // sibling subagent.
+    let agent_id = v
+        .get("agent_id")
+        .and_then(|s| s.as_str())
+        .unwrap_or_default();
     let tool_use_id = v
         .get("tool_use_id")
         .and_then(|s| s.as_str())
@@ -100,7 +111,7 @@ fn compute_read_dedup(input: &str) -> Option<String> {
         .unwrap_or(0);
 
     let disk_hash = hash_file(&path)?;
-    let store = record_path(&session_id, &path, offset, limit)?;
+    let store = record_path(&session_id, agent_id, &path, offset, limit)?;
 
     let Ok(prev) = std::fs::read_to_string(&store) else {
         // First read in this session: record it, keep the native result.
@@ -274,9 +285,12 @@ fn hash_file(path: &str) -> Option<String> {
 }
 
 /// `<tmp>/lean-ctx-hook/rd/<session-hash>/<read-key>.rdx`, creating the session
-/// dir. Session-scoped so [`purge_session`] and the TTL sweep stay O(1) dirs.
+/// dir. Session-scoped so [`purge_session`] and the TTL sweep stay O(1) dirs;
+/// the reading context (`agent_id`, empty for the main conversation) is part of
+/// the read key, so a compaction purge still clears every subagent's records.
 fn record_path(
     session_id: &str,
+    agent_id: &str,
     path: &str,
     offset: i64,
     limit: i64,
@@ -286,7 +300,8 @@ fn record_path(
     let sess = blake3::hash(session_id.as_bytes()).to_hex()[..16].to_string();
     let dir = root.join(sess);
     std::fs::create_dir_all(&dir).ok()?;
-    let key = blake3::hash(format!("{path}\u{0}{offset}\u{0}{limit}").as_bytes()).to_hex()[..16]
+    let key = blake3::hash(format!("{agent_id}\u{0}{path}\u{0}{offset}\u{0}{limit}").as_bytes())
+        .to_hex()[..16]
         .to_string();
     Some(dir.join(format!("{key}.rdx")))
 }
@@ -713,6 +728,63 @@ mod tests {
             "text block swapped in place"
         );
         assert_eq!(updated[0]["type"], "text", "block type mirrored");
+    }
+
+    #[test]
+    fn subagent_first_read_is_never_stubbed() {
+        // #1916: Claude Code runs subagents under the parent's session_id and
+        // marks them only with agent_id. A subagent's first Read of a file the
+        // parent already read must deliver full content; repeated reads inside
+        // that subagent still dedup, and a compaction purge clears them too.
+        let _lock = crate::core::data_dir::test_env_lock();
+        let _guard = guard_env();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("lib.rs");
+        std::fs::write(&file, big_body()).unwrap();
+        let session = unique_session("s11");
+        let with_agent = |tool_use: &str, agent: &str| {
+            let mut v: serde_json::Value = serde_json::from_str(&payload(
+                &session,
+                tool_use,
+                &file,
+                &serde_json::json!(big_body()),
+            ))
+            .unwrap();
+            v["agent_id"] = serde_json::json!(agent);
+            v["agent_type"] = serde_json::json!("general-purpose");
+            v.to_string()
+        };
+
+        let parent = payload(&session, "toolu_p1", &file, &serde_json::json!(big_body()));
+        assert!(compute_read_dedup(&parent).is_none(), "parent first read");
+        assert!(
+            compute_read_dedup(&with_agent("toolu_s1", "ac658786042dba697")).is_none(),
+            "subagent's first read must keep the native result"
+        );
+        assert!(
+            compute_read_dedup(&with_agent("toolu_s2", "b0000000000000001")).is_none(),
+            "a sibling subagent's first read must keep the native result"
+        );
+        assert!(
+            compute_read_dedup(&with_agent("toolu_s3", "ac658786042dba697")).is_some(),
+            "a re-read inside the same subagent still dedups"
+        );
+        assert!(
+            compute_read_dedup(&payload(
+                &session,
+                "toolu_p2",
+                &file,
+                &serde_json::json!(big_body())
+            ))
+            .is_some(),
+            "the parent's own re-read still dedups"
+        );
+
+        purge_session(&session);
+        assert!(
+            compute_read_dedup(&with_agent("toolu_s4", "ac658786042dba697")).is_none(),
+            "compaction purge must clear subagent records as well"
+        );
     }
 
     #[test]

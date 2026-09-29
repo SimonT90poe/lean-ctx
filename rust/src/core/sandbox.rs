@@ -480,11 +480,9 @@ fn execute_with_stdin(
     #[cfg(unix)]
     cmd.process_group(0);
 
-    let child = cmd
-        .spawn()
-        .map_err(|e| format!("Failed to spawn {}: {e}", runtime.command))?;
-
-    let output = wait_with_timeout(child, timeout)?;
+    let output = wait_with_timeout(&mut cmd, timeout, |e| {
+        format!("Failed to spawn {}: {e}", runtime.command)
+    })?;
     Ok((
         crate::shell::decode_output(&output.stdout),
         crate::shell::decode_output(&output.stderr),
@@ -527,10 +525,9 @@ fn execute_with_file(
         #[cfg(unix)]
         cmd.process_group(0);
 
-        let child = cmd
-            .spawn()
-            .map_err(|e| format!("Failed to spawn {}: {e}", runtime.command))?;
-        let output = wait_with_timeout(child, timeout)?;
+        let output = wait_with_timeout(&mut cmd, timeout, |e| {
+            format!("Failed to spawn {}: {e}", runtime.command)
+        })?;
         Ok((
             crate::shell::decode_output(&output.stdout),
             crate::shell::decode_output(&output.stderr),
@@ -588,11 +585,9 @@ fn execute_rust(
     #[cfg(unix)]
     run_cmd.process_group(0);
 
-    let child = run_cmd
-        .spawn()
-        .map_err(|e| format!("Failed to run compiled binary: {e}"))?;
-
-    let output = wait_with_timeout(child, timeout)?;
+    let output = wait_with_timeout(&mut run_cmd, timeout, |e| {
+        format!("Failed to run compiled binary: {e}")
+    })?;
     let _ = std::fs::remove_file(&binary_path);
 
     Ok((
@@ -603,18 +598,26 @@ fn execute_rust(
 }
 
 fn wait_with_timeout(
-    child: std::process::Child,
+    cmd: &mut Command,
     timeout_secs: u64,
+    spawn_error: impl FnOnce(std::io::Error) -> String,
 ) -> Result<std::process::Output, String> {
-    let mut child = child;
+    // #1920: contain the whole tree, so a timeout on Windows ends what the
+    // snippet started instead of only the interpreter.
+    crate::shell::process_tree::ProcessTree::prepare(cmd);
+    let mut child = cmd.spawn().map_err(spawn_error)?;
+    let tree = crate::shell::process_tree::ProcessTree::start(&mut child)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
 
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => return child.wait_with_output().map_err(|e| e.to_string()),
+            Ok(Some(_)) => {
+                tree.release();
+                return child.wait_with_output().map_err(|e| e.to_string());
+            }
             Ok(None) => {
                 if std::time::Instant::now() > deadline {
-                    kill_process_tree(&mut child);
+                    tree.kill(&mut child);
                     // GH #1504: after killing, drain whatever the child wrote
                     // before the timeout so partial output is preserved instead
                     // of being silently discarded.
@@ -629,24 +632,12 @@ fn wait_with_timeout(
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
-            Err(e) => return Err(e.to_string()),
+            Err(e) => {
+                tree.kill(&mut child);
+                let _ = child.wait();
+                return Err(e.to_string());
+            }
         }
-    }
-}
-
-/// Kill a child process and its entire process group (Unix) or just the child
-/// (non-Unix). Uses SIGKILL on the negative PID to hit the whole group created
-/// by `process_group(0)`.
-fn kill_process_tree(child: &mut std::process::Child) {
-    #[cfg(unix)]
-    {
-        let pid = child.id() as i32;
-        // SAFETY: libc::kill with negative pid targets the process group.
-        unsafe { libc::kill(-pid, libc::SIGKILL) };
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = child.kill();
     }
 }
 
