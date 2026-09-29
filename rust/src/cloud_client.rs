@@ -12,8 +12,19 @@ fn credentials_path() -> PathBuf {
     config_dir().join("credentials.json")
 }
 
+/// Base URL of the lean-ctx cloud API. Unit tests and cargo-launched binaries
+/// get the discard port instead of any non-loopback endpoint, so test fixtures
+/// (telemetry probes, feedback, stats, wrapped cards) can never reach
+/// production; their requests fail fast with "connection refused".
 pub fn api_url() -> String {
-    std::env::var("LEAN_CTX_API_URL").unwrap_or_else(|_| "https://api.leanctx.com".to_string())
+    const LOOPBACK_SINK: &str = "http://127.0.0.1:9";
+    let configured =
+        std::env::var("LEAN_CTX_API_URL").unwrap_or_else(|_| "https://api.leanctx.com".to_string());
+    if cloud_endpoint_allowed(&configured, launched_by_cargo()) {
+        configured
+    } else {
+        LOOPBACK_SINK.to_string()
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -469,9 +480,9 @@ fn launched_by_cargo() -> bool {
     std::env::var("CARGO_PKG_NAME").is_ok_and(|name| name == env!("CARGO_PKG_NAME"))
 }
 
-/// Unit tests and cargo-launched binaries may only send telemetry to a
-/// loopback endpoint; otherwise test fixtures would pollute production data.
-fn telemetry_endpoint_allowed(base_url: &str, launched_by_cargo: bool) -> bool {
+/// Unit tests and cargo-launched binaries may only talk to a loopback
+/// endpoint; otherwise test fixtures would pollute production data.
+fn cloud_endpoint_allowed(base_url: &str, launched_by_cargo: bool) -> bool {
     if !cfg!(test) && !launched_by_cargo {
         return true;
     }
@@ -520,11 +531,7 @@ pub(crate) fn telemetry_v2_batch_with_timeout(
     batch
         .validate()
         .map_err(|error| format!("Telemetry validation failed: {error:?}"))?;
-    let base = api_url();
-    if !telemetry_endpoint_allowed(&base, launched_by_cargo()) {
-        return Err("Telemetry from test and cargo-run processes is loopback-only".to_string());
-    }
-    let url = format!("{base}/api/telemetry/v2/batch");
+    let url = format!("{}/api/telemetry/v2/batch", api_url());
     let response = ureq::post(&url)
         .config()
         .timeout_global(Some(timeout))

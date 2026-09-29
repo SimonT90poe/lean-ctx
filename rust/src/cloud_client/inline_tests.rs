@@ -9,7 +9,7 @@ use crate::core::billing::Plan;
 use crate::core::data_dir::test_env_lock;
 
 #[test]
-fn test_processes_never_send_telemetry_to_a_remote_endpoint() {
+fn test_processes_never_reach_a_remote_cloud_endpoint() {
     for launched_by_cargo in [false, true] {
         for remote in [
             "https://api.leanctx.com",
@@ -20,7 +20,7 @@ fn test_processes_never_send_telemetry_to_a_remote_endpoint() {
             "127.0.0.1:9",
         ] {
             assert!(
-                !telemetry_endpoint_allowed(remote, launched_by_cargo),
+                !cloud_endpoint_allowed(remote, launched_by_cargo),
                 "{remote}"
             );
         }
@@ -32,10 +32,30 @@ fn test_processes_never_send_telemetry_to_a_remote_endpoint() {
             "http://[::1]:9",
         ] {
             assert!(
-                telemetry_endpoint_allowed(loopback, launched_by_cargo),
+                cloud_endpoint_allowed(loopback, launched_by_cargo),
                 "{loopback}"
             );
         }
+    }
+}
+
+#[test]
+fn api_url_redirects_test_processes_away_from_production() {
+    let _lock = crate::core::data_dir::test_env_lock();
+    let previous = std::env::var_os("LEAN_CTX_API_URL");
+
+    // Every cloud call (feedback, stats, wrapped, telemetry) builds on api_url,
+    // so the default and any remote override must land on the loopback sink.
+    crate::test_env::remove_var("LEAN_CTX_API_URL");
+    assert_eq!(api_url(), "http://127.0.0.1:9");
+    crate::test_env::set_var("LEAN_CTX_API_URL", "https://api.leanctx.com");
+    assert_eq!(api_url(), "http://127.0.0.1:9");
+    crate::test_env::set_var("LEAN_CTX_API_URL", "http://127.0.0.1:8088");
+    assert_eq!(api_url(), "http://127.0.0.1:8088");
+
+    match previous {
+        Some(value) => crate::test_env::set_var("LEAN_CTX_API_URL", value),
+        None => crate::test_env::remove_var("LEAN_CTX_API_URL"),
     }
 }
 
