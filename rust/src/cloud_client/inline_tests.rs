@@ -9,6 +9,44 @@ use crate::core::billing::Plan;
 use crate::core::data_dir::test_env_lock;
 
 #[test]
+fn test_processes_never_send_telemetry_to_a_remote_endpoint() {
+    for launched_by_cargo in [false, true] {
+        for remote in [
+            "https://api.leanctx.com",
+            "http://10.0.0.1:8080",
+            "http://localhost.evil.com",
+            "http://127.0.0.1@api.leanctx.com",
+            "ftp://127.0.0.1",
+            "127.0.0.1:9",
+        ] {
+            assert!(
+                !telemetry_endpoint_allowed(remote, launched_by_cargo),
+                "{remote}"
+            );
+        }
+        for loopback in [
+            "http://127.0.0.1:9",
+            "http://127.3.2.1",
+            "http://localhost:8088/prefix",
+            "https://LOCALHOST",
+            "http://[::1]:9",
+        ] {
+            assert!(
+                telemetry_endpoint_allowed(loopback, launched_by_cargo),
+                "{loopback}"
+            );
+        }
+    }
+}
+
+#[test]
+fn cargo_test_processes_are_recognised_as_cargo_launched() {
+    // Children spawned by integration tests inherit this, which is what keeps
+    // the release binary under test from reaching production telemetry.
+    assert!(launched_by_cargo());
+}
+
+#[test]
 fn telemetry_delete_response_requires_explicit_confirmation() {
     assert!(deletion_confirmed(200, r#"{"deleted":true}"#).unwrap());
     assert!(!deletion_confirmed(204, "").unwrap());

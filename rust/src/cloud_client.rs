@@ -463,6 +463,38 @@ pub fn submit_product_feedback(payload: &serde_json::Value) -> Result<String, St
     Ok(json["message"].as_str().unwrap_or("Thanks").to_string())
 }
 
+/// Cargo exports `CARGO_PKG_NAME` to `cargo test` / `cargo run` processes and
+/// every child they spawn, so integration tests driving the binary carry it too.
+fn launched_by_cargo() -> bool {
+    std::env::var("CARGO_PKG_NAME").is_ok_and(|name| name == env!("CARGO_PKG_NAME"))
+}
+
+/// Unit tests and cargo-launched binaries may only send telemetry to a
+/// loopback endpoint; otherwise test fixtures would pollute production data.
+fn telemetry_endpoint_allowed(base_url: &str, launched_by_cargo: bool) -> bool {
+    if !cfg!(test) && !launched_by_cargo {
+        return true;
+    }
+    let Some(authority) = base_url
+        .strip_prefix("http://")
+        .or_else(|| base_url.strip_prefix("https://"))
+        .and_then(|rest| rest.split(['/', '?', '#']).next())
+    else {
+        return false;
+    };
+    if authority.contains('@') {
+        return false;
+    }
+    let host = match authority.strip_prefix('[') {
+        Some(bracketed) => bracketed.split(']').next().unwrap_or_default(),
+        None => authority.split(':').next().unwrap_or_default(),
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 /// Send one validated telemetry-v2 daily batch. No authentication required.
 pub fn telemetry_v2_batch(
     batch: &crate::core::telemetry_v2::TelemetryBatchV2,
@@ -488,7 +520,11 @@ pub(crate) fn telemetry_v2_batch_with_timeout(
     batch
         .validate()
         .map_err(|error| format!("Telemetry validation failed: {error:?}"))?;
-    let url = format!("{}/api/telemetry/v2/batch", api_url());
+    let base = api_url();
+    if !telemetry_endpoint_allowed(&base, launched_by_cargo()) {
+        return Err("Telemetry from test and cargo-run processes is loopback-only".to_string());
+    }
+    let url = format!("{base}/api/telemetry/v2/batch");
     let response = ureq::post(&url)
         .config()
         .timeout_global(Some(timeout))
