@@ -1,12 +1,16 @@
 use super::{
-    AgentRecord, AgentStatus, check, decommission, get, heartbeat, list, list_active, register,
-    registry_path, resume, spiffe_id, suspend, suspend_agents_for_owner, with_registry,
+    AgentRecord, AgentStatus, binary_sha256, check, decommission, get, heartbeat, list,
+    list_active, register, registry_path, resume, spiffe_id, suspend, suspend_agents_for_owner,
+    with_registry,
 };
 use fs2::FileExt;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 fn isolated() -> crate::core::data_dir::IsolatedDataDir {
+    // Hashing the (debug, ~400 MB) test binary is env-independent and cached per
+    // process; warm it before the global env lock so no holder pays seconds.
+    let _ = binary_sha256();
     crate::core::data_dir::isolated_data_dir()
 }
 

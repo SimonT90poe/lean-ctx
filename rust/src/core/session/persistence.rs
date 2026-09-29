@@ -14,7 +14,11 @@ const PROJECT_HISTORY_LIMIT: usize = 8;
 /// How long a save waits for the per-session lock before reporting failure.
 /// Generous enough that an ordinary concurrent save wins it, short enough that
 /// a holder which has stopped making progress cannot hold a caller forever.
+#[cfg(not(test))]
 const SAVE_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// The wedged-holder test waits this out under the global test env lock.
+#[cfg(test)]
+const SAVE_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct ProjectSessionIndex {
