@@ -586,6 +586,13 @@ jobs:
           workspaces: rust -> target
       - name: Compile benchmarks
         working-directory: rust
+        # CI only proves the benches compile and link; it never runs them, so
+        # the release profile's fat LTO + single codegen unit (17 min here) buys
+        # nothing. Same code, same targets, fast codegen.
+        env:
+          CARGO_PROFILE_BENCH_LTO: "false"
+          CARGO_PROFILE_BENCH_CODEGEN_UNITS: "256"
+          CARGO_PROFILE_BENCH_OPT_LEVEL: "0"
         run: cargo bench --no-run
       - name: Generate reproducible scorecard
         working-directory: rust

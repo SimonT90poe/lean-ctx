@@ -166,6 +166,10 @@ mod tests {
 
     #[test]
     fn records_and_accumulates() {
+        // Every recording test isolates: record_savings writes the verified
+        // ledger under the data dir, which would otherwise land in another
+        // test's isolated dir (or the developer's real ledger).
+        let _dir = crate::core::data_dir::isolated_data_dir();
         let ledger = BuiltinSavingsLedger::new();
         ledger.record_savings(evidence(1000, 300)).unwrap();
         ledger.record_savings(evidence(500, 200)).unwrap();
@@ -175,6 +179,7 @@ mod tests {
 
     #[test]
     fn ratio_calculation() {
+        let _dir = crate::core::data_dir::isolated_data_dir();
         let ledger = BuiltinSavingsLedger::new();
         ledger.record_savings(evidence(1000, 250)).unwrap();
 

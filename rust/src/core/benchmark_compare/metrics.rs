@@ -283,16 +283,16 @@ mod tests {
 
     #[test]
     fn build_mode_comparisons_includes_full() {
-        let bench = crate::core::benchmark::run_project_benchmark("src");
+        let root = crate::core::benchmark_compare::tests::fixture_root();
+        let bench = crate::core::benchmark::run_project_benchmark(&root.to_string_lossy());
         let comps = build_mode_comparisons(&bench);
         assert!(comps.iter().any(|c| c.mode == "full"));
         assert!(comps.iter().any(|c| c.mode == "map"));
     }
 
     #[test]
-    fn measure_all_on_src() {
-        let root = Path::new("src");
-        let metrics = measure_all(root);
+    fn measure_all_on_fixture() {
+        let metrics = &crate::core::benchmark_compare::tests::fixture_report().metrics;
         assert!(metrics.project_benchmark.files_measured > 0);
         assert!(!metrics.mode_comparisons.is_empty());
         assert!(!metrics.search_latencies.is_empty());

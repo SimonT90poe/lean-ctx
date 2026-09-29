@@ -441,17 +441,7 @@ fn format_num(n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::benchmark_compare::{competitors, system_info};
-    use std::path::Path;
-
-    fn make_test_report() -> CompareReport {
-        let metrics = metrics::measure_all(Path::new("src"));
-        CompareReport {
-            metrics,
-            system: system_info::collect(),
-            competitors: competitors::all_competitors(),
-        }
-    }
+    use crate::core::benchmark_compare::tests::fixture_report as make_test_report;
 
     #[test]
     fn markdown_contains_all_sections() {

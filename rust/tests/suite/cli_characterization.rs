@@ -243,7 +243,16 @@ fn graph_unknown_sub_prints_usage() {
 
 #[test]
 fn smells_exits_zero() {
-    let out = run(&["smells"]);
+    // A tiny project keeps the full index→smells path under test; scanning the
+    // crate itself (the cwd) cost ~2 min and ran alone at the suite's tail.
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("lib.rs"),
+        "pub fn a() -> u8 { b() }\nfn b() -> u8 { 1 }\n",
+    )
+    .unwrap();
+    let root = format!("--root={}", dir.path().display());
+    let out = run(&["smells", &root]);
     let code = exit_code(&out);
     assert!(
         code == 0 || code == 1,
