@@ -55,6 +55,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Not yet: `--compress`, `--truncate`, `--strip-comments`, `--trim-base64`,
   `--show-line-numbers`.
 
+### Removed — 24 core modules that no code path used (#1923)
+
+- These `lean_ctx::core` modules had no caller in the binary, the tests, the
+  benches, the other workspace crates or `lean-ctx-sdk`; they were compiled
+  and shipped, but never ran:
+  - `adaptive_chunking`, `cognitive_load`, `graph_features`,
+    `progressive_compression`, `structural_diff`, `structural_tokenizer` —
+    listed as added "Context Runtime research modules" in an earlier release;
+    no read, search or compression path ever called them.
+  - `adaptive_compression`, `agent_attribution`, `cache_diagnostics`,
+    `chain_compression`, `content_handle`, `cross_customer_learning`,
+    `delta_response`, `evidence_classification`, `evidence_flow`,
+    `execution_ledger`, `fleet_analytics`, `json_sample`,
+    `negative_knowledge`, `query_aware`, `rule_scorer`, `session_budget`,
+    `token_calibration`, `work_graph`.
+- About 12,500 lines less to build and maintain. No CLI command, MCP tool,
+  config key or contract changes. Rust embedders that imported one of these
+  paths directly must drop the import; `crate::engine::ContextEngine` and
+  `lean-ctx-sdk` are the supported embedding surfaces.
+- `rust/LOCK_ORDERING.md` drops lock L88 (`HANDLES`), which lived in the
+  removed `content_handle`.
+- Still open in #1923: six modules only tests reference
+  (`predictive_prefetch`, `multiscale_index`, `context_column`, `ocp`,
+  `solution_rules`, `solution_types`).
+
 ### Fixed — Windows: a timed-out or cancelled command no longer leaves processes behind (#1920)
 
 - On Windows, `ctx_shell`, `ctx_execute` and the sandbox only ended the shell
