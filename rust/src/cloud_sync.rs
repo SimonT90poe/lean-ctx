@@ -75,20 +75,91 @@ pub fn classify_outcomes(results: &[Result<(), String>]) -> AutoSyncOutcome {
     AutoSyncOutcome::Synced
 }
 
+/// Network budget for the send that runs as the MCP server exits.
+pub const EXIT_TELEMETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+const BACKGROUND_TELEMETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Whether this process may collect and send telemetry right now. Fails closed:
+/// an unreadable config never counts as consent.
+fn telemetry_send_eligible() -> bool {
+    let Ok(config) = Config::try_load_global() else {
+        return false;
+    };
+    let do_not_track = std::env::var("DO_NOT_TRACK").ok();
+    let telemetry_override = std::env::var("LEAN_CTX_TELEMETRY").ok();
+    config
+        .telemetry
+        .send_eligible(do_not_track.as_deref(), telemetry_override.as_deref())
+}
+
+/// Send the cumulative telemetry totals if the aggregate admits a send now.
+/// Returns the acknowledged bucket. Admission (daily cap, spacing, "nothing
+/// new") is decided under the aggregate lock, so callers may call freely.
+pub fn send_telemetry(trigger: crate::core::telemetry_aggregate::SendTrigger) -> Option<String> {
+    if !telemetry_send_eligible() {
+        return None;
+    }
+    // Persist first so the counters survive even when no send is admitted.
+    if let Err(error) = crate::core::telemetry_aggregate::persist_process_counters() {
+        tracing::debug!("telemetry counters not persisted: {error}");
+    }
+    let lease = match crate::core::telemetry_aggregate::begin_send(trigger) {
+        Ok(lease) => lease,
+        Err(reason) => {
+            tracing::debug!("telemetry send skipped: {reason}");
+            return None;
+        }
+    };
+    let batch = lease.batch().clone();
+    let timeout = match trigger {
+        crate::core::telemetry_aggregate::SendTrigger::Exit => EXIT_TELEMETRY_TIMEOUT,
+        crate::core::telemetry_aggregate::SendTrigger::Periodic => BACKGROUND_TELEMETRY_TIMEOUT,
+    };
+    if let Err(error) = crate::cloud_client::telemetry_v2_batch_with_timeout(&batch, timeout) {
+        tracing::debug!("telemetry send failed, batch kept for retry: {error}");
+        return None;
+    }
+    let installation_id = batch.events.first()?.installation_id.clone();
+    let payload = serde_json::to_vec(&batch).ok()?;
+    use sha2::Digest;
+    let record = crate::core::telemetry_ledger::HeartbeatRecord {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        installation_id,
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        schema_version: batch.schema_version,
+        event_names: batch
+            .events
+            .iter()
+            .map(|event| event.event.name().to_string())
+            .collect(),
+        payload_hash: hex::encode(sha2::Sha256::digest(payload)),
+        endpoint: telemetry_ledger_endpoint(),
+        status: "success".to_string(),
+    };
+    // Without a ledger entry the send stays pending and is retried with the
+    // same bytes; the server replaces per-day rows, so that is harmless.
+    if let Err(error) = crate::core::telemetry_ledger::append(&record) {
+        tracing::debug!("telemetry ledger append failed: {error}");
+        return None;
+    }
+    if let Err(error) = lease.commit() {
+        tracing::debug!("telemetry acknowledgement failed: {error}");
+        return None;
+    }
+    batch
+        .events
+        .first()
+        .map(|event| event.timestamp_bucket.clone())
+}
+
 pub fn cloud_background_tasks() {
     // Persist path: read global-only so the daily background save never leaks a
     // project-local override into the global config (#443).
     let mut config = Config::load_global();
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let telemetry_bucket = crate::core::telemetry_aggregate::current_send_bucket();
 
-    let already_heartbeated = config
-        .telemetry
-        .last_heartbeat
-        .as_deref()
-        .is_some_and(|d| d == telemetry_bucket)
-        || crate::core::telemetry_aggregate::last_sent_bucket().as_deref()
-            == Some(telemetry_bucket.as_str());
     let already_synced = config
         .cloud
         .last_sync
@@ -105,57 +176,15 @@ pub fn cloud_background_tasks() {
         .as_deref()
         .is_some_and(|d| d == today);
 
-    // Unified anonymous telemetry: heartbeat + contribute entries in one request.
-    let do_not_track = std::env::var("DO_NOT_TRACK").ok();
-    let telemetry_override = std::env::var("LEAN_CTX_TELEMETRY").ok();
-    let telemetry_eligible = config
-        .telemetry
-        .send_eligible(do_not_track.as_deref(), telemetry_override.as_deref());
-    if telemetry_eligible
-        && let Err(error) = crate::core::telemetry_aggregate::record_current_version()
-    {
-        tracing::debug!("telemetry version aggregate unavailable: {error}");
-    }
-    if telemetry_eligible && !already_heartbeated {
-        if let Ok(lease) = crate::core::telemetry_aggregate::begin_daily_send() {
-            let batch = lease.batch().clone();
-            let installation_id = batch
-                .events
-                .first()
-                .map(|event| event.installation_id.clone());
-            if let Ok(payload) = serde_json::to_vec(&batch)
-                && crate::cloud_client::telemetry_v2_batch(&batch).is_ok()
-            {
-                use sha2::Digest;
-                let payload_hash = hex::encode(sha2::Sha256::digest(payload));
-                let record = installation_id.map(|installation_id| {
-                    crate::core::telemetry_ledger::HeartbeatRecord {
-                        timestamp: chrono::Utc::now().to_rfc3339(),
-                        installation_id,
-                        version: env!("CARGO_PKG_VERSION").to_string(),
-                        os: std::env::consts::OS.to_string(),
-                        arch: std::env::consts::ARCH.to_string(),
-                        schema_version: batch.schema_version,
-                        event_names: batch
-                            .events
-                            .iter()
-                            .map(|event| event.event.name().to_string())
-                            .collect(),
-                        payload_hash,
-                        endpoint: telemetry_ledger_endpoint(),
-                        status: "success".to_string(),
-                    }
-                });
-                let ledger_committed = record
-                    .as_ref()
-                    .is_some_and(|record| crate::core::telemetry_ledger::append(record).is_ok());
-                if ledger_committed && lease.commit().is_ok() {
-                    config.telemetry.last_heartbeat = batch
-                        .events
-                        .first()
-                        .map(|event| event.timestamp_bucket.clone());
-                }
-            }
+    // Anonymous usage telemetry: cumulative daily totals, resent as they grow.
+    if telemetry_send_eligible() {
+        if let Err(error) = crate::core::telemetry_aggregate::record_current_version() {
+            tracing::debug!("telemetry version aggregate unavailable: {error}");
+        }
+        if let Some(bucket) =
+            send_telemetry(crate::core::telemetry_aggregate::SendTrigger::Periodic)
+        {
+            config.telemetry.last_heartbeat = Some(bucket);
         }
     }
 

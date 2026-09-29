@@ -807,11 +807,11 @@ pub enum TelemetryPreference {
 
 /// Privacy-safe product telemetry settings.
 ///
-/// When enabled, lean-ctx sends a daily heartbeat to `api.leanctx.com` containing
-/// only: a random installation ID (UUID v4), the lean-ctx version, OS, and CPU
-/// architecture. No code, filenames, usage patterns, or personal data — ever.
-/// Enabled by default in v4, but transmission remains blocked until the
-/// one-time notice has been processed on an eligible interactive run.
+/// When enabled, lean-ctx sends cumulative daily aggregates to `api.leanctx.com`
+/// several times per day: a random installation ID (UUID v4), version, OS,
+/// setup profile and counters. No code, filenames, prompts, or personal data.
+/// Enabled by default (accepted at install); `lean-ctx telemetry off`,
+/// `DO_NOT_TRACK=1` and `LEAN_CTX_TELEMETRY=off` opt out.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TelemetryConfig {
@@ -819,9 +819,7 @@ pub struct TelemetryConfig {
     pub enabled: bool,
     /// Whether the state came from the v4 default or an explicit user choice.
     pub preference: TelemetryPreference,
-    /// Persisted one-time disclosure gate. No default-on send occurs before it.
-    pub notice_shown: bool,
-    /// Daily debounce: YYYY-MM-DD of the last successful heartbeat.
+    /// YYYY-MM-DD of the last successful telemetry send.
     pub last_heartbeat: Option<String>,
 }
 
@@ -830,7 +828,6 @@ impl Default for TelemetryConfig {
         Self {
             enabled: true,
             preference: TelemetryPreference::DefaultOn,
-            notice_shown: false,
             last_heartbeat: None,
         }
     }
@@ -857,7 +854,6 @@ impl TelemetryConfig {
     pub fn send_eligible(&self, do_not_track: Option<&str>, env_override: Option<&str>) -> bool {
         self.enabled
             && self.preference != TelemetryPreference::ExplicitlyDisabled
-            && self.notice_shown
             && !Self::environment_disables(do_not_track, env_override)
     }
 }
@@ -1657,11 +1653,11 @@ mod telemetry_tests {
     use super::*;
 
     #[test]
-    fn telemetry_config_defaults_on_but_notice_gated() {
+    fn telemetry_config_defaults_on_and_send_eligible() {
         let cfg = TelemetryConfig::default();
         assert!(cfg.enabled);
         assert_eq!(cfg.preference, TelemetryPreference::DefaultOn);
-        assert!(!cfg.notice_shown);
+        assert!(cfg.send_eligible(None, None));
         assert!(cfg.last_heartbeat.is_none());
     }
 
@@ -1679,8 +1675,14 @@ last_heartbeat = "2026-07-30"
         let wrap: Wrap = toml::from_str(toml_str).expect("parse telemetry config");
         assert!(wrap.telemetry.enabled);
         assert_eq!(wrap.telemetry.preference, TelemetryPreference::DefaultOn);
-        assert!(!wrap.telemetry.notice_shown);
         assert_eq!(wrap.telemetry.last_heartbeat.as_deref(), Some("2026-07-30"));
+    }
+
+    #[test]
+    fn a_retired_notice_key_in_an_existing_config_still_parses() {
+        let cfg: TelemetryConfig =
+            toml::from_str("enabled = true\nnotice_shown = false").expect("pre-removal config");
+        assert!(cfg.send_eligible(None, None));
     }
 
     #[test]
@@ -1694,7 +1696,6 @@ last_heartbeat = "2026-07-30"
         let wrap: Wrap = toml::from_str(toml_str).expect("parse empty config");
         assert!(wrap.telemetry.enabled);
         assert_eq!(wrap.telemetry.preference, TelemetryPreference::DefaultOn);
-        assert!(!wrap.telemetry.notice_shown);
         assert!(wrap.telemetry.last_heartbeat.is_none());
     }
 
@@ -1705,10 +1706,8 @@ last_heartbeat = "2026-07-30"
     }
 
     #[test]
-    fn send_requires_notice_and_honors_both_environment_opt_outs() {
+    fn send_honors_the_explicit_and_both_environment_opt_outs() {
         let mut cfg = TelemetryConfig::default();
-        assert!(!cfg.send_eligible(None, None));
-        cfg.notice_shown = true;
         assert!(cfg.send_eligible(None, None));
         assert!(!cfg.send_eligible(Some("1"), None));
         assert!(!cfg.send_eligible(None, Some("OFF")));

@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Privacy-safe daily telemetry aggregation.
+//!
+//! Every UTC day keeps cumulative totals. A send carries the full totals of
+//! today (and of any closed day with unsent activity) under that day's bucket.
+//! The server replaces per-day rows, so sending several times a day is
+//! idempotent: tool usage reaches the server within the day, and a one-day
+//! user is counted without having to come back.
 
 use sha2::Digest;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -13,11 +19,34 @@ use serde::{Deserialize, Serialize};
 use super::installation_id;
 use super::telemetry_v2::{
     Architecture, ClientFamily, DecisionMetrics, DistributionChannel, EmbeddingsState,
-    ErrorCategory, ErrorMetrics, HeartbeatMetrics, Histogram, IntegrationMode, MAX_COUNT,
-    MAX_TOOL_ENTRIES, OccurrenceMetrics, OperatingSystem, SCHEMA_VERSION, SessionMetrics,
-    SetupProfileMetrics, SyncMetrics, TelemetryBatchV2, TelemetryEnvelopeV2, TelemetryEventV2,
-    ToolCallCount, ToolCallMetrics, ToolUsageMetrics, VersionUpgradeMetrics, valid_tool_name,
+    ErrorCategory, ErrorMetrics, HeartbeatMetrics, Histogram, IntegrationMode, MAX_BATCH_EVENTS,
+    MAX_COUNT, MAX_TOOL_ENTRIES, OccurrenceMetrics, OperatingSystem, SCHEMA_VERSION,
+    SessionMetrics, SetupProfileMetrics, SyncMetrics, TelemetryBatchV2, TelemetryEnvelopeV2,
+    TelemetryEventV2, ToolCallCount, ToolCallMetrics, ToolUsageMetrics, VersionUpgradeMetrics,
+    valid_tool_name,
 };
+
+/// Most send attempts per installation and UTC day. The server admits ten;
+/// two stay in reserve for clock skew between client and server.
+pub const DAILY_SEND_CAP: u32 = 8;
+/// Backoff base while today's first send has not been acknowledged yet.
+const RETRY_BACKOFF_SECS: i64 = 60;
+/// Spacing after the first acknowledged send of a day; doubles per attempt.
+const RESEND_INTERVAL_SECS: i64 = 15 * 60;
+const MAX_SEND_INTERVAL_SECS: i64 = 2 * 60 * 60;
+/// Flat spacing for the exit flush, so a session's final calls still arrive.
+const EXIT_RESEND_INTERVAL_SECS: i64 = 5 * 60;
+/// Closed days with unsent activity kept locally besides today.
+const RETAINED_CLOSED_DAYS: usize = 7;
+
+/// What prompted a send attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendTrigger {
+    /// Background cadence while tools are being called.
+    Periodic,
+    /// Final flush as the MCP server exits; may use the last daily slot.
+    Exit,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -48,8 +77,17 @@ struct AggregateState {
     process_nonce: String,
     acknowledged: CounterCheckpoint,
     pending: Option<PendingBatch>,
+    /// Bucket of the most recently acknowledged batch.
     #[serde(default)]
     last_sent_bucket: Option<String>,
+    /// Unix time of the most recent admitted send attempt.
+    #[serde(default)]
+    last_attempt_unix: Option<i64>,
+    /// UTC day that `attempts_in_bucket` counts for.
+    #[serde(default)]
+    attempt_bucket: Option<String>,
+    #[serde(default)]
+    attempts_in_bucket: u32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -62,7 +100,28 @@ struct OneShotState {
     observed_major: Option<u16>,
     #[serde(default)]
     last_acknowledged_batch: Option<String>,
+    /// Pre-daily-totals queue. Loaded for compatibility and migrated into
+    /// today's totals; never written with content again.
+    #[serde(default, skip_serializing_if = "QueuedOneShots::is_empty")]
     queued: QueuedOneShots,
+    /// Cumulative totals per UTC day, keyed `YYYY-MM-DD`.
+    #[serde(default)]
+    days: BTreeMap<String, DayTotals>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DayTotals {
+    totals: QueuedOneShots,
+    /// The totals the server last acknowledged for this day.
+    #[serde(default)]
+    sent: QueuedOneShots,
+}
+
+impl DayTotals {
+    fn unsent(&self) -> bool {
+        self.totals != self.sent
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,10 +140,63 @@ struct QueuedOneShots {
     checkout_started: u64,
     #[serde(default)]
     error_categories: [u64; 8],
-    /// Tool counters folded in by every process and not yet acknowledged, so
-    /// short sessions and calls after the daily send reach the next batch.
+    /// Tool counters folded in by every process, so short sessions reach the
+    /// server even when the process exits before the next send.
     #[serde(default)]
     counters: CounterCheckpoint,
+}
+
+impl QueuedOneShots {
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Merge `extra` into these totals, saturating at the contract bounds.
+    fn absorb(&mut self, extra: &Self) {
+        self.setup_completed |= extra.setup_completed;
+        self.integrations_detected = self
+            .integrations_detected
+            .saturating_add(extra.integrations_detected)
+            .min(MAX_COUNT);
+        self.version_upgrade = match (self.version_upgrade, extra.version_upgrade) {
+            (Some(own), Some(other)) => Some(VersionTransition {
+                from_major: own.from_major.min(other.from_major),
+                to_major: own.to_major.max(other.to_major),
+            }),
+            (own, other) => own.or(other),
+        };
+        self.sync.attempts = self
+            .sync
+            .attempts
+            .saturating_add(extra.sync.attempts)
+            .min(MAX_COUNT);
+        self.sync.successes = self
+            .sync
+            .successes
+            .saturating_add(extra.sync.successes)
+            .min(self.sync.attempts);
+        self.sync.failures = self
+            .sync
+            .failures
+            .saturating_add(extra.sync.failures)
+            .min(self.sync.attempts - self.sync.successes);
+        add_decisions(&mut self.autopilot, &extra.autopilot);
+        add_decisions(&mut self.autopilot_fallback, &extra.autopilot_fallback);
+        self.checkout_started = self
+            .checkout_started
+            .saturating_add(extra.checkout_started)
+            .min(MAX_COUNT);
+        for (own, other) in self.error_categories.iter_mut().zip(extra.error_categories) {
+            *own = own.saturating_add(other).min(MAX_COUNT);
+        }
+        add_counters(&mut self.counters, &extra.counters);
+    }
+}
+
+fn add_decisions(total: &mut DecisionMetrics, extra: &DecisionMetrics) {
+    total.admitted = total.admitted.saturating_add(extra.admitted).min(MAX_COUNT);
+    total.denied = total.denied.saturating_add(extra.denied).min(MAX_COUNT);
+    total.fallback = total.fallback.saturating_add(extra.fallback).min(MAX_COUNT);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,8 +214,12 @@ struct PendingBatch {
     acknowledgement_id: String,
     observed: CounterCheckpoint,
     process_nonce: String,
-    #[serde(default)]
+    /// Legacy subtract-on-acknowledge snapshot; new batches use `included_days`.
+    #[serde(default, skip_serializing_if = "QueuedOneShots::is_empty")]
     included_one_shots: QueuedOneShots,
+    /// Exact per-day totals this batch carries, recorded as sent on success.
+    #[serde(default)]
+    included_days: BTreeMap<String, QueuedOneShots>,
 }
 
 pub struct DailySendLease {
@@ -119,17 +235,7 @@ impl DailySendLease {
     }
 
     pub fn commit(self) -> Result<(), String> {
-        let current_state = load_state_at(&self.state_path)?;
-        let pending = current_state
-            .pending
-            .as_ref()
-            .ok_or_else(|| "no prepared telemetry batch to acknowledge".to_string())?;
-        let included = pending.included_one_shots.clone();
-        let acknowledgement_id = pending_acknowledgement_id(pending)?;
-        let state = acknowledge_state(current_state, &self.batch)?;
-        acknowledge_one_shots_at(&self.one_shot_path, &included, &acknowledgement_id)?;
-        write_state(&self.state_path, &state)?;
-        Ok(())
+        acknowledge_at(&self.state_path, &self.one_shot_path, &self.batch)
     }
 }
 
@@ -163,85 +269,62 @@ pub fn preview_daily_batch() -> Result<TelemetryBatchV2, String> {
     })?;
     let mut one_shots = one_shots_for_current_identity(load_one_shots_at(&sidecar_path)?)?;
     // Fold in memory only: the preview must not advance durable state.
-    fold_process_counters(&sidecar_path, &mut one_shots);
-    build_from_queued(&one_shots.queued)
+    let today = current_send_bucket();
+    fold_process_counters(&sidecar_path, &mut one_shots, &today);
+    build_batch(&one_shots, &today).map(|(batch, _)| batch)
 }
 
-/// Freeze one payload until the sender explicitly acknowledges success.
+/// Freeze one payload until the sender explicitly acknowledges success,
+/// bypassing admission so tests can drive the two phases directly.
 #[cfg(test)]
 fn prepare_daily_batch() -> Result<TelemetryBatchV2, String> {
     with_locked_state(|mut state| {
         if let Some(pending) = &state.pending {
             return Ok((state.clone(), pending.batch.clone()));
         }
-        let sidecar_path = one_shot_path()?;
-        ensure_parent(&sidecar_path)?;
-        let sidecar_lock = open_sidecar_lock(&sidecar_path)?;
-        lock_telemetry_file(&sidecar_lock, "one-shot")?;
-        let mut one_shots = one_shots_for_current_identity(load_one_shots_at(&sidecar_path)?)?;
-        let observed = fold_process_counters(&sidecar_path, &mut one_shots);
-        write_one_shots(&sidecar_path, &one_shots)?;
-        mark_folded(&sidecar_path, observed.clone());
-        let batch = build_from_queued(&one_shots.queued)?;
-        state.installation_id = batch_installation_id(&batch).to_string();
-        state.pending = Some(PendingBatch {
-            batch: batch.clone(),
-            acknowledgement_id: uuid::Uuid::new_v4().to_string(),
-            observed,
-            process_nonce: process_nonce().to_string(),
-            included_one_shots: one_shots.queued,
-        });
+        let (batch, _) = freeze_batch(&mut state, &current_send_bucket())?;
         Ok((state, batch))
     })
 }
 
-/// Hold the cross-process state lease until network, ledger, and acknowledgement finish.
+/// Hold the cross-process state lease until network, ledger, and
+/// acknowledgement finish. Refuses while the next send is not yet due.
 pub fn begin_daily_send() -> Result<DailySendLease, String> {
-    begin_daily_send_in_bucket(None)
+    begin_send(SendTrigger::Periodic)
 }
 
-/// Resolve one UTC bucket under the lock for both admission and payload.
-/// Tests inject a fixed bucket; pending batches retain their original bytes.
-fn begin_daily_send_in_bucket(bucket: Option<&str>) -> Result<DailySendLease, String> {
+/// Admission and payload resolve one clock reading under the aggregate lock,
+/// so competing senders cannot both pass a stale caller-side precheck.
+pub fn begin_send(trigger: SendTrigger) -> Result<DailySendLease, String> {
     let path = state_path()?;
     let one_shot_path = one_shot_path()?;
     ensure_parent(&path)?;
     let lock = open_state_lock(&path)?;
     lock_telemetry_file(&lock, "aggregate")?;
     let mut state = state_for_current_identity(load_state()?)?;
+    let (bucket, now) = send_clock();
+    if state.attempt_bucket.as_deref() != Some(bucket.as_str()) {
+        state.attempt_bucket = Some(bucket.clone());
+        state.attempts_in_bucket = 0;
+    }
+    let sent_today = state.last_sent_bucket.as_deref() == Some(bucket.as_str());
+    admit(&state, now, trigger, sent_today)?;
     let batch = if let Some(pending) = &state.pending {
-        // Retries remain at-least-once, including across UTC day boundaries.
+        // Retries remain at-least-once with the exact frozen bytes, including
+        // across UTC day boundaries.
         pending.batch.clone()
     } else {
-        // A caller-side precheck cannot serialize competing senders.
-        let bucket = match bucket {
-            Some(bucket) => bucket.to_string(),
-            None => current_send_bucket(),
-        };
-        if state.last_sent_bucket.as_deref() == Some(bucket.as_str()) {
-            return Err(format!(
-                "telemetry daily batch for {bucket} was already sent"
-            ));
+        let (batch, unsent) = freeze_batch(&mut state, &bucket)?;
+        if sent_today && !unsent {
+            // Nothing new since the last acknowledged send. The fold above
+            // already persisted this process's counters, which is harmless.
+            return Err(format!("telemetry for {bucket} is already up to date"));
         }
-        ensure_parent(&one_shot_path)?;
-        let one_shot_lock = open_sidecar_lock(&one_shot_path)?;
-        lock_telemetry_file(&one_shot_lock, "one-shot")?;
-        let mut one_shots = one_shots_for_current_identity(load_one_shots_at(&one_shot_path)?)?;
-        let observed = fold_process_counters(&one_shot_path, &mut one_shots);
-        write_one_shots(&one_shot_path, &one_shots)?;
-        mark_folded(&one_shot_path, observed.clone());
-        let batch = build_in_bucket(&one_shots.queued, bucket)?;
-        state.installation_id = batch_installation_id(&batch).to_string();
-        state.pending = Some(PendingBatch {
-            batch: batch.clone(),
-            acknowledgement_id: uuid::Uuid::new_v4().to_string(),
-            observed,
-            process_nonce: process_nonce().to_string(),
-            included_one_shots: one_shots.queued,
-        });
-        write_state(&path, &state)?;
         batch
     };
+    state.last_attempt_unix = Some(now);
+    state.attempts_in_bucket = state.attempts_in_bucket.saturating_add(1);
+    write_state(&path, &state)?;
     Ok(DailySendLease {
         batch,
         state_path: path,
@@ -250,7 +333,85 @@ fn begin_daily_send_in_bucket(bucket: Option<&str>) -> Result<DailySendLease, St
     })
 }
 
-/// Advance counters only when the exact frozen payload was accepted remotely.
+/// Whether the next attempt is due. Attempts in a day are capped below the
+/// server's own limit; their spacing grows so a long session sends a handful
+/// of cumulative snapshots and an offline machine backs off.
+fn admit(
+    state: &AggregateState,
+    now: i64,
+    trigger: SendTrigger,
+    sent_today: bool,
+) -> Result<(), String> {
+    let cap = match trigger {
+        SendTrigger::Periodic => DAILY_SEND_CAP - 1,
+        SendTrigger::Exit => DAILY_SEND_CAP,
+    };
+    let attempts = state.attempts_in_bucket;
+    if attempts >= cap {
+        return Err(format!(
+            "telemetry daily send limit reached ({attempts} of {cap} attempts)"
+        ));
+    }
+    let interval = if attempts == 0 {
+        0
+    } else if state.pending.is_some() || !sent_today {
+        backoff(RETRY_BACKOFF_SECS, attempts)
+    } else if trigger == SendTrigger::Exit {
+        EXIT_RESEND_INTERVAL_SECS
+    } else {
+        backoff(RESEND_INTERVAL_SECS, attempts)
+    };
+    // A clock that moved backwards must not stall sending until it catches up.
+    let elapsed = state
+        .last_attempt_unix
+        .map_or(i64::MAX, |last| now.saturating_sub(last));
+    if elapsed >= 0 && elapsed < interval {
+        return Err(format!(
+            "telemetry send not due for another {}s",
+            interval - elapsed
+        ));
+    }
+    Ok(())
+}
+
+fn backoff(base: i64, attempts: u32) -> i64 {
+    base.saturating_mul(1_i64 << attempts.saturating_sub(1).min(16))
+        .min(MAX_SEND_INTERVAL_SECS)
+}
+
+/// Fold this process's counters, then freeze the batch for `bucket` as the
+/// pending payload. Also reports whether the batch carries any totals the
+/// server has not acknowledged yet. Holds the one-shot lock only for the fold.
+fn freeze_batch(
+    state: &mut AggregateState,
+    bucket: &str,
+) -> Result<(TelemetryBatchV2, bool), String> {
+    let one_shot_path = one_shot_path()?;
+    ensure_parent(&one_shot_path)?;
+    let one_shot_lock = open_sidecar_lock(&one_shot_path)?;
+    lock_telemetry_file(&one_shot_lock, "one-shot")?;
+    let mut one_shots = one_shots_for_current_identity(load_one_shots_at(&one_shot_path)?)?;
+    let observed = fold_process_counters(&one_shot_path, &mut one_shots, bucket);
+    write_one_shots(&one_shot_path, &one_shots)?;
+    mark_folded(&one_shot_path, observed.clone());
+    let (batch, included_days) = build_batch(&one_shots, bucket)?;
+    // A day without an entry has no activity, so it has nothing unsent.
+    let unsent = included_days
+        .keys()
+        .any(|day| one_shots.days.get(day).is_some_and(DayTotals::unsent));
+    state.installation_id = batch_installation_id(&batch).to_string();
+    state.pending = Some(PendingBatch {
+        batch: batch.clone(),
+        acknowledgement_id: uuid::Uuid::new_v4().to_string(),
+        observed,
+        process_nonce: process_nonce().to_string(),
+        included_one_shots: QueuedOneShots::default(),
+        included_days,
+    });
+    Ok((batch, unsent))
+}
+
+/// Advance durable state only when the exact frozen payload was accepted.
 #[cfg(test)]
 fn acknowledge_daily_batch(batch: &TelemetryBatchV2) -> Result<(), String> {
     let path = state_path()?;
@@ -258,17 +419,24 @@ fn acknowledge_daily_batch(batch: &TelemetryBatchV2) -> Result<(), String> {
     let lock = open_state_lock(&path)?;
     lock.lock_exclusive()
         .map_err(|error| format!("cannot lock telemetry aggregate state: {error}"))?;
-    let state = load_state_at(&path)?;
-    let pending = state
+    acknowledge_at(&path, &one_shot_path()?, batch)
+}
+
+fn acknowledge_at(
+    state_path: &std::path::Path,
+    one_shot_path: &std::path::Path,
+    batch: &TelemetryBatchV2,
+) -> Result<(), String> {
+    let current_state = load_state_at(state_path)?;
+    let pending = current_state
         .pending
         .as_ref()
         .ok_or_else(|| "no prepared telemetry batch to acknowledge".to_string())?;
-    let included = pending.included_one_shots.clone();
+    let included = pending.included_days.clone();
     let acknowledgement_id = pending_acknowledgement_id(pending)?;
-    let state = acknowledge_state(state, batch)?;
-    acknowledge_one_shots_at(&one_shot_path()?, &included, &acknowledgement_id)?;
-    write_state(&path, &state)?;
-    Ok(())
+    let state = acknowledge_state(current_state, batch)?;
+    acknowledge_one_shots_at(one_shot_path, &included, &acknowledgement_id)?;
+    write_state(state_path, &state)
 }
 
 fn pending_acknowledgement_id(pending: &PendingBatch) -> Result<String, String> {
@@ -309,7 +477,48 @@ pub fn last_sent_bucket() -> Option<String> {
 
 /// UTC bucket shared by payload generation and the background caller's precheck.
 pub(crate) fn current_send_bucket() -> String {
-    chrono::Utc::now().format("%Y-%m-%d").to_string()
+    send_clock().0
+}
+
+/// UTC day bucket and unix time from one clock reading.
+fn send_clock() -> (String, i64) {
+    #[cfg(test)]
+    if let Some(clock) = TEST_CLOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+    {
+        return clock;
+    }
+    let now = chrono::Utc::now();
+    (now.format("%Y-%m-%d").to_string(), now.timestamp())
+}
+
+/// Fixed clock for tests; `None` uses the system clock.
+#[cfg(test)]
+static TEST_CLOCK: Mutex<Option<(String, i64)>> = Mutex::new(None);
+
+/// Pin the send clock until the guard drops.
+#[cfg(test)]
+struct TestClockGuard;
+
+#[cfg(test)]
+impl TestClockGuard {
+    fn set(bucket: &str, unix: i64) -> Self {
+        *TEST_CLOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((bucket.to_string(), unix));
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestClockGuard {
+    fn drop(&mut self) {
+        *TEST_CLOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
 }
 
 fn state_for_current_identity(mut state: AggregateState) -> Result<AggregateState, String> {
@@ -337,24 +546,52 @@ fn batch_installation_id(batch: &TelemetryBatchV2) -> &str {
         .map_or("", |event| event.installation_id.as_str())
 }
 
-fn build_from_queued(queued: &QueuedOneShots) -> Result<TelemetryBatchV2, String> {
-    build_in_bucket(queued, current_send_bucket())
-}
-
-/// Build the payload for one explicit bucket. Split out so a caller that has
-/// already resolved the bucket under a lock stamps that exact value instead of
-/// reading the clock a second time.
-fn build_in_bucket(queued: &QueuedOneShots, bucket: String) -> Result<TelemetryBatchV2, String> {
+/// Build today's cumulative totals under `today`, followed by every closed day
+/// with unsent activity (oldest first) under its own bucket, as many as fit in
+/// one batch. Today leads so the first event names the send's bucket. Returns
+/// the exact totals included per day, to be recorded as sent on success.
+fn build_batch(
+    one_shots: &OneShotState,
+    today: &str,
+) -> Result<(TelemetryBatchV2, BTreeMap<String, QueuedOneShots>), String> {
     let (installation_id, deletion_token) = installation_id::get_or_create_identity()
         .map_err(|error| format!("installation ID unavailable: {error}"))?;
-    build_daily_aggregate(
-        installation_id,
-        hex::encode(sha2::Sha256::digest(deletion_token.as_bytes())),
-        bucket,
-        distribution_channel(),
-        client_family(),
-        queued,
-    )
+    let deletion_token_hash = hex::encode(sha2::Sha256::digest(deletion_token.as_bytes()));
+    let distribution_channel = distribution_channel();
+    let client_family = client_family();
+    let build_day = |day: &str, totals: &QueuedOneShots| {
+        build_daily_aggregate(
+            installation_id.clone(),
+            deletion_token_hash.clone(),
+            day.to_string(),
+            distribution_channel,
+            client_family,
+            totals,
+        )
+    };
+    let today_totals = one_shots
+        .days
+        .get(today)
+        .map(|day| day.totals.clone())
+        .unwrap_or_default();
+    let mut batch = build_day(today, &today_totals)?;
+    let mut included = BTreeMap::from([(today.to_string(), today_totals)]);
+    for (day, totals) in one_shots
+        .days
+        .range::<str, _>(before(today))
+        .filter(|(_, day)| day.unsent())
+    {
+        let closed = build_day(day, &totals.totals)?;
+        if batch.events.len() + closed.events.len() > MAX_BATCH_EVENTS {
+            break;
+        }
+        batch.events.extend(closed.events);
+        included.insert(day.clone(), totals.totals.clone());
+    }
+    batch
+        .validate()
+        .map_err(|error| format!("invalid telemetry batch: {error:?}"))?;
+    Ok((batch, included))
 }
 
 fn build_daily_aggregate(
@@ -603,12 +840,13 @@ fn folded_baselines() -> &'static Mutex<HashMap<PathBuf, CounterCheckpoint>> {
     FOLDED.get_or_init(Mutex::default)
 }
 
-/// Add this process's not-yet-folded counters to `one_shots.queued` in memory
+/// Add this process's not-yet-folded counters to the totals of `day` in memory
 /// and return the observed checkpoint. Callers that persist the result must
 /// then [`mark_folded`] it while still holding the sidecar lock.
 fn fold_process_counters(
     path: &std::path::Path,
     one_shots: &mut OneShotState,
+    day: &str,
 ) -> CounterCheckpoint {
     let observed = current_checkpoint();
     let folded = folded_baselines()
@@ -617,10 +855,10 @@ fn fold_process_counters(
         .get(path)
         .cloned()
         .unwrap_or_default();
-    add_counters(
-        &mut one_shots.queued.counters,
-        &counter_delta(&observed, &folded),
-    );
+    let delta = counter_delta(&observed, &folded);
+    if delta != CounterCheckpoint::default() {
+        add_counters(&mut day_totals(one_shots, day).counters, &delta);
+    }
     observed
 }
 
@@ -644,9 +882,9 @@ pub fn persist_process_counters() -> Result<(), String> {
     let lock = open_sidecar_lock(&path)?;
     lock_telemetry_file(&lock, "one-shot")?;
     let mut one_shots = one_shots_for_current_identity(load_one_shots_at(&path)?)?;
-    let before = one_shots.queued.counters.clone();
-    let observed = fold_process_counters(&path, &mut one_shots);
-    if one_shots.queued.counters != before {
+    let before = one_shots.clone();
+    let observed = fold_process_counters(&path, &mut one_shots, &current_send_bucket());
+    if one_shots.days != before.days || one_shots.queued != before.queued {
         write_one_shots(&path, &one_shots)?;
     }
     mark_folded(&path, observed);
@@ -704,37 +942,6 @@ fn add_counters(total: &mut CounterCheckpoint, delta: &CounterCheckpoint) {
     }
 }
 
-/// Remove exactly what an acknowledged batch carried. Totals are re-derived
-/// from the latency buckets so they stay consistent even if an identity
-/// reset zeroed the queue between prepare and acknowledgement.
-fn subtract_counters(total: &mut CounterCheckpoint, included: &CounterCheckpoint) {
-    for (bucket, sent) in total
-        .tool_latency_buckets
-        .iter_mut()
-        .zip(included.tool_latency_buckets)
-    {
-        *bucket = bucket.saturating_sub(sent);
-    }
-    total.tool_calls = total.tool_latency_buckets.iter().sum();
-    total.tool_failures = total
-        .tool_failures
-        .saturating_sub(included.tool_failures)
-        .min(total.tool_calls);
-    total.session_uptime_secs = total
-        .session_uptime_secs
-        .saturating_sub(included.session_uptime_secs);
-    for (tool, sent) in &included.tools {
-        if let Some(entry) = total.tools.get_mut(tool) {
-            entry.calls = entry.calls.saturating_sub(sent.calls);
-            entry.failures = entry
-                .failures
-                .saturating_sub(sent.failures)
-                .min(entry.calls);
-        }
-    }
-    total.tools.retain(|_, counter| counter.calls > 0);
-}
-
 /// Upper bound on distinct tool names kept in the sidecar; the batch itself
 /// keeps at most [`MAX_TOOL_ENTRIES`] of them.
 const MAX_PERSISTED_TOOLS: usize = 256;
@@ -754,10 +961,12 @@ pub fn record_setup_completion(
         return Ok(());
     }
     with_locked_one_shots(|mut state| {
+        let mut setup_completed = false;
         if !state.setup_recorded {
             state.setup_recorded = true;
-            state.queued.setup_completed = true;
+            setup_completed = true;
         }
+        let mut inserted = 0_u64;
         for integration_id in integration_ids {
             if state.configured_integrations.len() >= 64 {
                 break;
@@ -767,13 +976,15 @@ pub fn record_setup_completion(
             }
             let stable_id = hex::encode(sha2::Sha256::digest(integration_id.as_bytes()));
             if state.configured_integrations.insert(stable_id) {
-                state.queued.integrations_detected = state
-                    .queued
-                    .integrations_detected
-                    .saturating_add(1)
-                    .min(MAX_COUNT);
+                inserted += 1;
             }
         }
+        let today = today_totals(&mut state);
+        today.setup_completed |= setup_completed;
+        today.integrations_detected = today
+            .integrations_detected
+            .saturating_add(inserted)
+            .min(MAX_COUNT);
         Ok((state, ()))
     })
 }
@@ -783,25 +994,18 @@ pub fn record_sync_result(success: bool) -> Result<(), String> {
         return Ok(());
     }
     with_locked_one_shots(|mut state| {
-        if state.queued.sync.attempts >= MAX_COUNT {
+        let sync = &mut today_totals(&mut state).sync;
+        if sync.attempts >= MAX_COUNT {
             return Ok((state, ()));
         }
-        state.queued.sync.attempts += 1;
+        sync.attempts += 1;
         if success {
-            state.queued.sync.successes = state
-                .queued
-                .sync
-                .successes
-                .saturating_add(1)
-                .min(state.queued.sync.attempts);
+            sync.successes = sync.successes.saturating_add(1).min(sync.attempts);
         } else {
-            state.queued.sync.failures = state.queued.sync.failures.saturating_add(1).min(
-                state
-                    .queued
-                    .sync
-                    .attempts
-                    .saturating_sub(state.queued.sync.successes),
-            );
+            sync.failures = sync
+                .failures
+                .saturating_add(1)
+                .min(sync.attempts.saturating_sub(sync.successes));
         }
         Ok((state, ()))
     })
@@ -812,18 +1016,14 @@ pub fn record_autopilot_decisions(admitted: u64, denied: u64) -> Result<(), Stri
         return Ok(());
     }
     with_locked_one_shots(|mut state| {
-        state.queued.autopilot.admitted = state
-            .queued
-            .autopilot
-            .admitted
-            .saturating_add(admitted)
-            .min(MAX_COUNT);
-        state.queued.autopilot.denied = state
-            .queued
-            .autopilot
-            .denied
-            .saturating_add(denied)
-            .min(MAX_COUNT);
+        add_decisions(
+            &mut today_totals(&mut state).autopilot,
+            &DecisionMetrics {
+                admitted,
+                denied,
+                fallback: 0,
+            },
+        );
         Ok((state, ()))
     })
 }
@@ -833,18 +1033,14 @@ pub fn record_autopilot_fallback() -> Result<(), String> {
         return Ok(());
     }
     with_locked_one_shots(|mut state| {
-        state.queued.autopilot.fallback = state
-            .queued
-            .autopilot
-            .fallback
-            .saturating_add(1)
-            .min(MAX_COUNT);
-        state.queued.autopilot_fallback.fallback = state
-            .queued
-            .autopilot_fallback
-            .fallback
-            .saturating_add(1)
-            .min(MAX_COUNT);
+        let today = today_totals(&mut state);
+        let fallback = DecisionMetrics {
+            admitted: 0,
+            denied: 0,
+            fallback: 1,
+        };
+        add_decisions(&mut today.autopilot, &fallback);
+        add_decisions(&mut today.autopilot_fallback, &fallback);
         Ok((state, ()))
     })
 }
@@ -854,11 +1050,8 @@ pub fn record_checkout_started() -> Result<(), String> {
         return Ok(());
     }
     with_locked_one_shots(|mut state| {
-        state.queued.checkout_started = state
-            .queued
-            .checkout_started
-            .saturating_add(1)
-            .min(MAX_COUNT);
+        let today = today_totals(&mut state);
+        today.checkout_started = today.checkout_started.saturating_add(1).min(MAX_COUNT);
         Ok((state, ()))
     })
 }
@@ -887,15 +1080,18 @@ fn record_error_category_inner(category: ErrorCategory) -> Result<(), String> {
         .position(|candidate| *candidate == category)
         .expect("closed error category");
     with_locked_one_shots(|mut state| {
-        state.queued.error_categories[index] = state.queued.error_categories[index]
-            .saturating_add(1)
-            .min(MAX_COUNT);
+        let count = &mut today_totals(&mut state).error_categories[index];
+        *count = count.saturating_add(1).min(MAX_COUNT);
         Ok((state, ()))
     })
 }
 
+/// Collection stays off whenever the opt-out cannot be read: an unreadable or
+/// corrupt config must never be mistaken for consent.
 fn telemetry_collection_eligible() -> bool {
-    let config = crate::core::config::Config::load_global();
+    let Ok(config) = crate::core::config::Config::try_load_global() else {
+        return false;
+    };
     let do_not_track = std::env::var("DO_NOT_TRACK").ok();
     let telemetry_override = std::env::var("LEAN_CTX_TELEMETRY").ok();
     !config.telemetry.explicitly_disabled()
@@ -921,11 +1117,12 @@ fn record_current_version_value(version: &str) -> Result<(), String> {
         };
         match previous {
             Some(previous) if current > previous => {
-                let from_major = state
-                    .queued
+                // Several upgrades within one day collapse into one transition.
+                let today = today_totals(&mut state);
+                let from_major = today
                     .version_upgrade
                     .map_or(previous, |transition| transition.from_major);
-                state.queued.version_upgrade = Some(VersionTransition {
+                today.version_upgrade = Some(VersionTransition {
                     from_major,
                     to_major: current,
                 });
@@ -977,23 +1174,37 @@ pub fn rotate_identity_state_then<T>(
     let value = operation()?;
     one_shots.installation_id = installation_id::get_or_create()
         .map_err(|error| format!("installation ID unavailable after rotation: {error}"))?;
-    one_shots.queued.setup_completed |= one_shots.setup_recorded;
-    one_shots.queued.integrations_detected = one_shots
+    requeue_for_new_identity(&mut one_shots);
+    remove_state_file(&path, "aggregate")?;
+    write_one_shots(&one_shot_path, &one_shots)?;
+    Ok(value)
+}
+
+/// A new identity starts with no history, so only setup facts carry over:
+/// its first batch reports the existing setup as that identity's own.
+fn requeue_for_new_identity(state: &mut OneShotState) {
+    state.queued = QueuedOneShots::default();
+    state.days.clear();
+    state.last_acknowledged_batch = None;
+    let setup_completed = state.setup_recorded;
+    let integrations = state
         .configured_integrations
         .len()
         .try_into()
         .unwrap_or(MAX_COUNT)
         .min(MAX_COUNT);
-    one_shots.queued.sync = SyncMetrics::default();
-    one_shots.queued.autopilot = DecisionMetrics::default();
-    one_shots.queued.autopilot_fallback = DecisionMetrics::default();
-    one_shots.queued.checkout_started = 0;
-    one_shots.queued.error_categories = [0; 8];
-    one_shots.queued.counters = CounterCheckpoint::default();
-    one_shots.last_acknowledged_batch = None;
-    remove_state_file(&path, "aggregate")?;
-    write_one_shots(&one_shot_path, &one_shots)?;
-    Ok(value)
+    let today = today_totals(state);
+    today.setup_completed = setup_completed;
+    today.integrations_detected = integrations;
+}
+
+/// Totals for the current UTC day, created on first use.
+fn today_totals(state: &mut OneShotState) -> &mut QueuedOneShots {
+    day_totals(state, &current_send_bucket())
+}
+
+fn day_totals<'a>(state: &'a mut OneShotState, day: &str) -> &'a mut QueuedOneShots {
+    &mut state.days.entry(day.to_string()).or_default().totals
 }
 
 fn remove_state_file(path: &std::path::Path, kind: &str) -> Result<(), String> {
@@ -1034,22 +1245,37 @@ fn one_shots_for_current_identity(mut state: OneShotState) -> Result<OneShotStat
         state.installation_id = current;
     } else if state.installation_id != current {
         state.installation_id = current;
-        state.queued.setup_completed |= state.setup_recorded;
-        state.queued.integrations_detected = state
-            .configured_integrations
-            .len()
-            .try_into()
-            .unwrap_or(MAX_COUNT)
-            .min(MAX_COUNT);
-        state.queued.sync = SyncMetrics::default();
-        state.queued.autopilot = DecisionMetrics::default();
-        state.queued.autopilot_fallback = DecisionMetrics::default();
-        state.queued.checkout_started = 0;
-        state.queued.error_categories = [0; 8];
-        state.queued.counters = CounterCheckpoint::default();
-        state.last_acknowledged_batch = None;
+        requeue_for_new_identity(&mut state);
     }
+    normalize_days(&mut state, &current_send_bucket());
     Ok(state)
+}
+
+/// Range over the day keys strictly before `day` (closed days).
+fn before(day: &str) -> (std::ops::Bound<&str>, std::ops::Bound<&str>) {
+    (std::ops::Bound::Unbounded, std::ops::Bound::Excluded(day))
+}
+
+/// Migrate the pre-daily-totals queue into today and drop closed days the
+/// server already holds, keeping the most recent unsent ones.
+fn normalize_days(state: &mut OneShotState, today: &str) {
+    if !state.queued.is_empty() {
+        let legacy = std::mem::take(&mut state.queued);
+        day_totals(state, today).absorb(&legacy);
+    }
+    state
+        .days
+        .retain(|day, totals| day.as_str() >= today || totals.unsent());
+    let closed = state.days.range::<str, _>(before(today)).count();
+    let stale: Vec<String> = state
+        .days
+        .keys()
+        .take(closed.saturating_sub(RETAINED_CLOSED_DAYS))
+        .cloned()
+        .collect();
+    for day in stale {
+        state.days.remove(&day);
+    }
 }
 
 fn with_locked_one_shots<T>(
@@ -1065,9 +1291,11 @@ fn with_locked_one_shots<T>(
     Ok(value)
 }
 
+/// Record the exact per-day totals the server accepted. Totals that grew while
+/// the batch was in flight stay unsent and go out with the next send.
 fn acknowledge_one_shots_at(
     path: &std::path::Path,
-    included: &QueuedOneShots,
+    included: &BTreeMap<String, QueuedOneShots>,
     acknowledgement_id: &str,
 ) -> Result<(), String> {
     ensure_parent(path)?;
@@ -1077,68 +1305,15 @@ fn acknowledge_one_shots_at(
     if state.last_acknowledged_batch.as_deref() == Some(acknowledgement_id) {
         return Ok(());
     }
-    if included.setup_completed {
-        state.queued.setup_completed = false;
-    }
-    state.queued.integrations_detected = state
-        .queued
-        .integrations_detected
-        .saturating_sub(included.integrations_detected);
-    state.queued.sync.attempts = state
-        .queued
-        .sync
-        .attempts
-        .saturating_sub(included.sync.attempts);
-    state.queued.sync.successes = state
-        .queued
-        .sync
-        .successes
-        .saturating_sub(included.sync.successes);
-    state.queued.sync.failures = state
-        .queued
-        .sync
-        .failures
-        .saturating_sub(included.sync.failures);
-    subtract_decisions(&mut state.queued.autopilot, &included.autopilot);
-    subtract_decisions(
-        &mut state.queued.autopilot_fallback,
-        &included.autopilot_fallback,
-    );
-    state.queued.checkout_started = state
-        .queued
-        .checkout_started
-        .saturating_sub(included.checkout_started);
-    for (queued, included) in state
-        .queued
-        .error_categories
-        .iter_mut()
-        .zip(included.error_categories)
-    {
-        *queued = queued.saturating_sub(included);
-    }
-    subtract_counters(&mut state.queued.counters, &included.counters);
-    if let Some(sent) = included.version_upgrade {
-        state.queued.version_upgrade = match state.queued.version_upgrade {
-            Some(current) if current == sent => None,
-            Some(current)
-                if current.from_major == sent.from_major && current.to_major > sent.to_major =>
-            {
-                Some(VersionTransition {
-                    from_major: sent.to_major,
-                    to_major: current.to_major,
-                })
-            }
-            current => current,
-        };
+    // A day pruned or reset by an identity change in the meantime stays gone.
+    for (day, sent) in included {
+        if let Some(totals) = state.days.get_mut(day) {
+            totals.sent = sent.clone();
+        }
     }
     state.last_acknowledged_batch = Some(acknowledgement_id.to_string());
+    normalize_days(&mut state, &current_send_bucket());
     write_one_shots(path, &state)
-}
-
-fn subtract_decisions(current: &mut DecisionMetrics, included: &DecisionMetrics) {
-    current.admitted = current.admitted.saturating_sub(included.admitted);
-    current.denied = current.denied.saturating_sub(included.denied);
-    current.fallback = current.fallback.saturating_sub(included.fallback);
 }
 
 #[cfg(test)]

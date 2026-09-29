@@ -65,7 +65,7 @@ fn telemetry_test_config(contents: &str) {
     std::fs::write(path, contents).unwrap();
 }
 
-const TELEMETRY_ALLOWED: &str = "[telemetry]\nenabled = true\nnotice_shown = true\n";
+const TELEMETRY_ALLOWED: &str = "[telemetry]\nenabled = true\n";
 
 fn telemetry_test_batch() -> crate::core::telemetry_v2::TelemetryBatchV2 {
     use crate::core::telemetry_v2::{ClientFamily, DistributionChannel};
@@ -128,9 +128,8 @@ fn telemetry_send_rechecks_config_and_environment_before_any_connection() {
     let stale = crate::core::config::Config::try_load_global().unwrap();
     assert!(stale.telemetry.send_eligible(None, None));
     for config in [
-        "[telemetry]\nenabled = false\nnotice_shown = true\n",
-        "[telemetry]\nenabled = true\nnotice_shown = false\n",
-        "[telemetry]\nenabled = true\nnotice_shown = true\npreference = 'explicitly_disabled'\n",
+        "[telemetry]\nenabled = false\n",
+        "[telemetry]\nenabled = true\npreference = 'explicitly_disabled'\n",
     ] {
         telemetry_test_config(config);
         assert_eq!(

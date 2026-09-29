@@ -497,13 +497,6 @@ fn migrate_legacy_contribute_document(raw: &str, preserve_opt_out: bool) -> Opti
     if !preserve_opt_out {
         document["telemetry"]["enabled"] = toml_edit::value(true);
         document["telemetry"]["preference"] = toml_edit::value("explicitly_enabled");
-        if document
-            .get("telemetry")
-            .and_then(|table| table.get("notice_shown"))
-            .is_none()
-        {
-            document["telemetry"]["notice_shown"] = toml_edit::value(false);
-        }
     }
     Some(document.to_string())
 }
@@ -513,7 +506,7 @@ mod telemetry_migration_tests {
     use super::*;
 
     #[test]
-    fn legacy_opt_in_becomes_explicit_and_notice_gated() {
+    fn legacy_opt_in_becomes_explicit_and_send_eligible() {
         let migrated = migrate_legacy_contribute_document(
             "# keep me\n[cloud]\ncontribute_enabled = true\n",
             false,
@@ -527,7 +520,7 @@ mod telemetry_migration_tests {
             cfg.telemetry.preference,
             super::super::TelemetryPreference::ExplicitlyEnabled
         );
-        assert!(!cfg.telemetry.notice_shown);
+        assert!(cfg.telemetry.send_eligible(None, None));
     }
 
     #[test]

@@ -4,44 +4,6 @@
 
 use crate::core::config;
 use crate::core::installation_id;
-use std::io::IsTerminal;
-
-const DEFAULT_ON_NOTICE: &str = "LeanCTX anonymous product telemetry is enabled by default.\n\nSent: version, OS/arch, anonymous install ID, AI client family, integration mode, daily call counts per built-in lean-ctx tool, coarse feature/health aggregates.\nNever sent: prompts, source code, file contents, filenames, commands, secrets.\n\nInspect:  lean-ctx telemetry show\nDisable:  lean-ctx telemetry off\nHistory:  lean-ctx telemetry history";
-
-pub(crate) fn maybe_show_default_on_notice() {
-    let terminal = std::io::stderr().is_terminal();
-    let ci = std::env::var_os("CI").is_some();
-    let do_not_track = std::env::var("DO_NOT_TRACK").ok();
-    let telemetry_override = std::env::var("LEAN_CTX_TELEMETRY").ok();
-    let cfg = config::Config::load_global();
-    if !should_show_default_on_notice(
-        &cfg.telemetry,
-        terminal,
-        ci,
-        do_not_track.as_deref(),
-        telemetry_override.as_deref(),
-    ) {
-        return;
-    }
-
-    if config::setter::set_by_key("telemetry.notice_shown", "true").is_ok() {
-        eprintln!("{DEFAULT_ON_NOTICE}");
-    }
-}
-
-fn should_show_default_on_notice(
-    telemetry: &config::TelemetryConfig,
-    terminal: bool,
-    ci: bool,
-    do_not_track: Option<&str>,
-    env_override: Option<&str>,
-) -> bool {
-    terminal
-        && !ci
-        && !telemetry.notice_shown
-        && !telemetry.explicitly_disabled()
-        && !config::TelemetryConfig::environment_disables(do_not_track, env_override)
-}
 
 pub(super) fn cmd_telemetry(args: &[String]) {
     let sub = args.first().map(String::as_str).unwrap_or("status");
@@ -75,8 +37,6 @@ enum SendBlocker {
     Preference,
     /// `DO_NOT_TRACK=1`, or `LEAN_CTX_TELEMETRY=off|false|0|no`.
     Environment,
-    /// The one-time default-on notice has not been processed yet.
-    Notice,
     /// The authority refuses for a reason this display does not model yet.
     Policy,
 }
@@ -86,7 +46,6 @@ impl SendBlocker {
         match self {
             Self::Preference => "off by your saved preference",
             Self::Environment => "blocked by the environment (DO_NOT_TRACK / LEAN_CTX_TELEMETRY)",
-            Self::Notice => "waiting for the one-time notice",
             Self::Policy => "blocked by telemetry policy",
         }
     }
@@ -107,25 +66,32 @@ fn send_blocker(
         Some(SendBlocker::Preference)
     } else if config::TelemetryConfig::environment_disables(do_not_track, env_override) {
         Some(SendBlocker::Environment)
-    } else if !telemetry.notice_shown {
-        Some(SendBlocker::Notice)
     } else {
         Some(SendBlocker::Policy)
     }
 }
 
 fn show_status() {
-    // Global-only, like every path that actually sends (`show_payload`,
-    // `cloud_sync::cloud_background_tasks`): a project-local override would
-    // otherwise be shown as if it gated transmission.
-    let cfg = config::Config::load_global();
+    // Global-only and fail-closed, exactly like every path that actually
+    // sends: an unreadable config never counts as default-on.
+    let cfg = match config::Config::try_load_global() {
+        Ok(cfg) => cfg,
+        Err(error) => {
+            println!("  Sending:    \x1b[2minactive — config unreadable ({error})\x1b[0m");
+            return;
+        }
+    };
     let enabled = !cfg.telemetry.explicitly_disabled();
     let blocker = send_blocker(
         &cfg.telemetry,
         std::env::var("DO_NOT_TRACK").ok().as_deref(),
         std::env::var("LEAN_CTX_TELEMETRY").ok().as_deref(),
     );
-    let last = cfg.telemetry.last_heartbeat.as_deref().unwrap_or("never");
+    // The aggregate records every acknowledged send; the config field only
+    // tracks the daily background pass and lags intraday sends.
+    let last = crate::core::telemetry_aggregate::last_sent_bucket()
+        .or_else(|| cfg.telemetry.last_heartbeat.clone());
+    let last = last.as_deref().unwrap_or("never");
 
     println!(
         "  Preference: {}",
@@ -160,7 +126,7 @@ fn show_status() {
 /// Config writes for `telemetry on|off`, applied atomically. Every key must
 /// exist in the config schema — one unknown key fails the whole update.
 /// Legacy `cloud.contribute_enabled` is migrated by the config loader.
-fn consent_updates(enabled: bool) -> [(&'static str, &'static str); 3] {
+fn consent_updates(enabled: bool) -> [(&'static str, &'static str); 2] {
     let (value, preference) = if enabled {
         ("true", "explicitly_enabled")
     } else {
@@ -169,7 +135,6 @@ fn consent_updates(enabled: bool) -> [(&'static str, &'static str); 3] {
     [
         ("telemetry.enabled", value),
         ("telemetry.preference", preference),
-        ("telemetry.notice_shown", "true"),
     ]
 }
 
@@ -178,8 +143,9 @@ fn set_enabled(enabled: bool) {
         Ok(_) => {
             if enabled {
                 println!("Telemetry enabled — thank you for helping improve lean-ctx!");
-                println!("Sent daily: version, OS/arch, anonymous install ID, AI client family,");
-                println!("integration mode, call counts per built-in tool, coarse aggregates.");
+                println!("Sent as cumulative daily totals, several times a day: version, OS/arch,");
+                println!("anonymous install ID, AI client family, integration mode, call counts");
+                println!("per built-in tool, coarse aggregates.");
                 println!("No prompts, code, file names, commands or secrets — ever.");
                 println!("\x1b[2mDisable anytime: lean-ctx telemetry off\x1b[0m");
             } else {
@@ -231,7 +197,10 @@ fn reset_id() {
 }
 
 fn show_payload() {
-    let cfg = config::Config::load_global();
+    let Ok(cfg) = config::Config::try_load_global() else {
+        println!("No telemetry payload is eligible: the config is unreadable.");
+        return;
+    };
     let do_not_track = std::env::var("DO_NOT_TRACK").ok();
     let telemetry_override = std::env::var("LEAN_CTX_TELEMETRY").ok();
     if !cfg
@@ -260,7 +229,10 @@ fn show_payload() {
         "\x1b[2mEndpoint: POST {}/api/telemetry/v2/batch\x1b[0m",
         api_url()
     );
-    println!("\x1b[2mFrequency: at most once per day\x1b[0m");
+    println!(
+        "\x1b[2mFrequency: cumulative daily totals, up to {} times per UTC day\x1b[0m",
+        crate::core::telemetry_aggregate::DAILY_SEND_CAP
+    );
     println!("\x1b[2mAuthentication: none\x1b[0m");
 }
 
@@ -364,17 +336,19 @@ fn print_help() {
     println!();
     println!("Subcommands:");
     println!("  status     Show current telemetry status (default)");
-    println!("  on         Enable anonymous heartbeat");
-    println!("  off        Disable anonymous heartbeat");
+    println!("  on         Enable anonymous product telemetry");
+    println!("  off        Disable anonymous product telemetry");
     println!("  show       Display the exact payload that would be sent");
     println!("  pending    Display the exact typed batch currently eligible for sending");
     println!("  reset-id   Regenerate the anonymous installation ID");
-    println!("  history    Show log of all sent heartbeats");
+    println!("  history    Show log of all sent batches");
     println!("  purge-local Delete the local telemetry history");
     println!("  delete-remote Delete server-side telemetry for this installation");
     println!();
-    println!("The heartbeat sends: version, OS, architecture, compression patterns,");
-    println!("and a random install UUID. No code, filenames, or personal data — ever.");
+    println!("Sends cumulative daily totals: version, OS/arch, a random install UUID,");
+    println!("client family, setup profile and per-tool call counts.");
+    println!("No code, filenames, prompts, commands or personal data — ever.");
+    println!("Opt out: lean-ctx telemetry off, DO_NOT_TRACK=1 or LEAN_CTX_TELEMETRY=off.");
 }
 
 #[cfg(test)]
@@ -417,56 +391,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn default_notice_requires_an_eligible_interactive_run() {
-        let cfg = config::TelemetryConfig::default();
-        assert!(should_show_default_on_notice(&cfg, true, false, None, None));
-        assert!(!should_show_default_on_notice(
-            &cfg, false, false, None, None
-        ));
-        assert!(!should_show_default_on_notice(&cfg, true, true, None, None));
-        assert!(!should_show_default_on_notice(
-            &cfg,
-            true,
-            false,
-            Some("1"),
-            None
-        ));
-        assert!(!should_show_default_on_notice(
-            &cfg,
-            true,
-            false,
-            None,
-            Some("off")
-        ));
-    }
-
-    #[test]
-    fn default_notice_never_overrides_persisted_user_state() {
-        let shown = config::TelemetryConfig {
-            notice_shown: true,
-            ..config::TelemetryConfig::default()
-        };
-        assert!(!should_show_default_on_notice(
-            &shown, true, false, None, None
-        ));
-        let disabled = config::TelemetryConfig {
-            enabled: false,
-            ..config::TelemetryConfig::default()
-        };
-        assert!(!should_show_default_on_notice(
-            &disabled, true, false, None, None
-        ));
-    }
-
     /// Eligible state, and each reason the status line must be able to name.
     #[test]
     fn status_names_every_reason_sending_is_inactive() {
-        // Default-on but pre-notice: enabled as a preference, not yet sending.
-        let mut cfg = config::TelemetryConfig::default();
-        assert_eq!(send_blocker(&cfg, None, None), Some(SendBlocker::Notice));
-
-        cfg.notice_shown = true;
+        // Default-on sends right away: no disclosure gate stands in between.
+        let cfg = config::TelemetryConfig::default();
         assert_eq!(send_blocker(&cfg, None, None), None);
 
         assert_eq!(
@@ -521,23 +450,19 @@ mod tests {
         let environments = [None, Some("0"), Some("1"), Some("off"), Some("no")];
         for enabled in [true, false] {
             for preference in preferences {
-                for notice_shown in [true, false] {
-                    for do_not_track in environments {
-                        for env_override in environments {
-                            let cfg = config::TelemetryConfig {
-                                enabled,
-                                preference,
-                                notice_shown,
-                                last_heartbeat: None,
-                            };
-                            assert_eq!(
-                                send_blocker(&cfg, do_not_track, env_override).is_none(),
-                                cfg.send_eligible(do_not_track, env_override),
-                                "disagreement for enabled={enabled} preference={preference:?} \
-                                 notice_shown={notice_shown} \
-                                 DO_NOT_TRACK={do_not_track:?} LEAN_CTX_TELEMETRY={env_override:?}"
-                            );
-                        }
+                for do_not_track in environments {
+                    for env_override in environments {
+                        let cfg = config::TelemetryConfig {
+                            enabled,
+                            preference,
+                            last_heartbeat: None,
+                        };
+                        assert_eq!(
+                            send_blocker(&cfg, do_not_track, env_override).is_none(),
+                            cfg.send_eligible(do_not_track, env_override),
+                            "disagreement for enabled={enabled} preference={preference:?} \
+                             DO_NOT_TRACK={do_not_track:?} LEAN_CTX_TELEMETRY={env_override:?}"
+                        );
                     }
                 }
             }
@@ -550,7 +475,6 @@ mod tests {
         let cfg = config::TelemetryConfig {
             enabled: true,
             preference: config::TelemetryPreference::ExplicitlyEnabled,
-            notice_shown: false,
             last_heartbeat: Some("2026-09-20".to_string()),
         };
         let _ = send_blocker(&cfg, Some("1"), Some("off"));
@@ -559,7 +483,6 @@ mod tests {
             cfg.preference,
             config::TelemetryPreference::ExplicitlyEnabled
         );
-        assert!(!cfg.notice_shown);
         assert_eq!(cfg.last_heartbeat.as_deref(), Some("2026-09-20"));
     }
 }

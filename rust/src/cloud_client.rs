@@ -470,7 +470,7 @@ pub fn telemetry_v2_batch(
     telemetry_v2_batch_with_timeout(batch, std::time::Duration::from_secs(10))
 }
 
-fn telemetry_v2_batch_with_timeout(
+pub(crate) fn telemetry_v2_batch_with_timeout(
     batch: &crate::core::telemetry_v2::TelemetryBatchV2,
     timeout: std::time::Duration,
 ) -> Result<String, String> {
