@@ -523,8 +523,7 @@ AI session summaries: periodic, semantically-recallable session digests
 
 Privacy-safe default-on telemetry with explicit opt-out
 
-- `enabled` (bool, default `true`) — Enable anonymous telemetry heartbeat (version, OS, arch, random install ID — no code or PII)
-- `notice_shown` (bool, default `false`) — Whether the one-time v4 telemetry disclosure has been processed
+- `enabled` (bool, default `true`) — Enable anonymous product telemetry (cumulative daily aggregates — no code, paths or PII)
 - `preference` (enum: default_on | explicitly_enabled | explicitly_disabled, default `default_on`) — Whether telemetry is using the v4 default or an explicit user choice
 
 ## `[updates]`

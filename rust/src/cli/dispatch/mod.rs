@@ -47,9 +47,6 @@ pub fn run() {
     if !enters_mcp {
         crate::core::logging::init_logging();
     }
-    if !enters_mcp && !is_server_mode(&args) {
-        crate::cli::telemetry_cmd::maybe_show_default_on_notice();
-    }
 
     if args.len() > 1 {
         let rest = args[2..].to_vec();

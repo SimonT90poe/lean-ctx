@@ -44,13 +44,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   shell still expands the glob. Quoted patterns (`'foo.*bar'`,
   `"weird[1].md"`) still take the direct rewrite.
 
-### Changed — anonymous product telemetry v2, on by default with notice
+### Changed — anonymous product telemetry v2, on by default
 
-- The opt-in v1 heartbeat is replaced by a strict, typed daily batch
-  (`telemetry_v2`). It is on by default, but nothing is sent until a one-time
-  notice has been shown in a terminal. `DO_NOT_TRACK`, `LEAN_CTX_TELEMETRY=off`,
-  CI, and `lean-ctx telemetry off` all stop it. An explicit earlier opt-out is
-  kept.
+- The opt-in v1 heartbeat is replaced by a strict, typed batch
+  (`telemetry_v2`). It is on by default, as accepted at installation.
+  `DO_NOT_TRACK`, `LEAN_CTX_TELEMETRY=off`, and `lean-ctx telemetry off` all
+  stop it, and an unreadable config fails closed. An explicit earlier opt-out
+  is kept.
+- Usage reaches the server during the day, not only once per day: counters are
+  kept per UTC day, and every send restates the full running total of each day,
+  so resends replace rather than add up. The MCP server sends periodically and
+  on shutdown, spaced and capped below the server's daily limit; unsent past
+  days follow under their own date. Users active for a single day are counted
+  too.
 - Sent: version, OS/arch, a random installation ID, and the AI client family.
   Clients now come from the MCP handshake: Claude, Codex, Cursor, Gemini,
   Windsurf, Zed, VS Code/Copilot, Kiro, Antigravity, CodeBuddy, CodeWhale.
