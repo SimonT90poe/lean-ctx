@@ -5,6 +5,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — quality claims match what the gates can show (#1905)
+
+- `lean-ctx eval ab` reports now print `POWER: underpowered` when a run has
+  fewer than 30 paired tasks, so a small replay reads as a pipeline check, not
+  as evidence that compression keeps answer quality.
+- Shadow reports say the baseline is simulated from the same outcome signals.
+  "Quality maintained" became "Outcome acceptance not below baseline", and
+  recommendations no longer claim quality was kept. The evidence export uses
+  the same wording.
+- The profile `constraints` docs state that `quality_floor` and
+  `max_context_tokens` are offline-only (benchmark and calibrate) and that the
+  other constraint fields are not read yet.
+- README: the CI testbench and A/B replays are described as mechanism gates,
+  and Shadow Mode as a simulated baseline. The archived E-Bench v2 report now
+  names the model its result files record (gpt-5.6-terra, not GPT-4.1).
+- Still open in #1905: a powered with/without study and a real holdout arm
+  for compression.
+
 ### Fixed — Windows: a timed-out or cancelled command no longer leaves processes behind (#1920)
 
 - On Windows, `ctx_shell`, `ctx_execute` and the sandbox only ended the shell
