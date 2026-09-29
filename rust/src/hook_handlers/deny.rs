@@ -79,8 +79,9 @@ fn should_allow(tool_name: &str, file_path: Option<&str>, payload: &str) -> bool
     }
 
     // #1631: the same pipeline delivers every OTHER MCP server's tools too, and
-    // replace mode has no `ctx_*` equivalent to offer for a Jira read or a Slack
-    // post. Denying them removed capabilities from the user's stack and gave
+    // replace mode has no drop-in `ctx_*` substitute for them: `ctx_provider`
+    // reads Jira only when the user configured that provider, and nothing posts
+    // to Slack. Denying them removed capabilities from the user's stack and gave
     // nothing back. Provenance decides first, because the native names below are
     // ordinary words a foreign server may legitimately use.
     if is_mcp_call(tool_name, payload) {
@@ -163,8 +164,10 @@ fn is_mcp_call(tool_name: &str, payload: &str) -> bool {
 /// Output: Tool rejected: Use the equivalent ctx_* tool — replace mode is active.
 /// ```
 ///
-/// lean-ctx has nothing to offer instead of a Jira read, so denying it removes
-/// a capability from the user's stack and gives back nothing. Replace mode's
+/// lean-ctx's own Jira provider (`ctx_provider provider=jira`) is opt-in and
+/// separately configured, so it is no drop-in substitute for the user's MCP
+/// server; denying that server's call removes a capability and gives back
+/// nothing. Replace mode's
 /// scope is the native read/search/shell surface it can genuinely replace;
 /// everything else passes through.
 ///
@@ -636,7 +639,8 @@ mod tests {
     /// Tool rejected: Use the equivalent ctx_* tool — replace mode is active.
     /// ```
     ///
-    /// There is no equivalent — lean-ctx does not read Jira. The guard was
+    /// There is no drop-in equivalent: `ctx_provider provider=jira` needs its
+    /// own opt-in configuration and is not the user's server. The guard was
     /// "deny everything that is not ctx_*", which is safe only on a host that
     /// filters by matcher first; Devin routes all MCP traffic through the same
     /// PreToolUse pipeline, so foreign servers were caught in it.

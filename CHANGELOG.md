@@ -55,6 +55,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Fixed: tool calls were never counted in production, so every usage
   aggregate reported zero.
 
+### Fixed — claims now match what the code does (#1914, #1915)
+
+- `ctx_verify action=proof` no longer reports "Lean4 proof verification" or
+  the `FormallyVerified` level. It ran no Lean toolchain: it added four
+  hard-coded "proved" claims, one naming a theorem that does not exist. The
+  report now lists only claims checked at runtime, and its highest level is
+  `PolicyChecked`. The README no longer mentions a "4-layer verification
+  engine".
+- `lean-ctx index status` reports a BM25 index with zero chunks as `empty`
+  instead of `ready`, and prints its chunk count. The Graph Index line no
+  longer shows the size of its metadata file as the index size.
+- Removed modules that no tool path ever called, together with the tests that
+  only exercised them: the marginal information gate, attention placement,
+  MDL selector, gamma cover, predictive-coding deltas, attention-weighted
+  context assembly, the U-curve attention model, the semantic chunk reorder,
+  and `io_boundary::read_file_scanned`. Earlier release notes described
+  several of them as shipped. Among them: the "Marginal Information Gate"
+  (3.9.13, #1308) never suppressed a response, and the
+  "research modules" (3.5.16) were never wired in. Removing them changes no
+  runtime behavior.
+- The built-in `review` profile no longer sets `layout.enabled = true`. No
+  layout driver exists; the key is still accepted but has no effect (see
+  `docs/contracts/attention-layout-driver-v1.md`). The non-overridable
+  redaction for a `regulated` role (#1358) was never active, and no such role
+  exists. Regulated deployments get redaction from policy-pack `[filters]`.
+- Source comments no longer claim unmeasured cognitive-mode savings or that
+  lean-ctx cannot read Jira.
+
 ### Fixed — files in legacy Windows encodings are indexed
 
 - Source files that are not strict UTF-8 were skipped silently by every index:

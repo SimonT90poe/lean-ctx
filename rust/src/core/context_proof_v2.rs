@@ -5,10 +5,13 @@
 //! claim is routed to the appropriate verifier and tagged with its
 //! verification status and evidence.
 //!
+//! Every claim is checked at runtime by the verifier it names. The schema
+//! has no "formally verified" level: nothing in the runtime checks a proof
+//! artifact, so no claim may report one (#1914).
+//!
 //! Design based on:
 //!   - Amazon Cedar VGD (arXiv:2407.01688)
 //!   - VERGE neurosymbolic verification (arXiv:2601.20055)
-//!   - VeriGuard formal safety (arXiv:2510.05156)
 
 use serde::{Deserialize, Serialize};
 
@@ -37,7 +40,6 @@ pub enum VerifierKind {
     PathPolicy,
     Test,
     TypeChecker,
-    LeanProof,
     StaticAnalysis,
     Heuristic,
     Unverifiable,
@@ -46,7 +48,6 @@ pub enum VerifierKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClaimStatus {
-    Proved,
     Passed,
     Failed,
     Skipped,
@@ -61,10 +62,8 @@ pub enum QualityLevel {
     Deterministic = 1,
     #[serde(rename = "2_tested")]
     Tested = 2,
-    #[serde(rename = "3_policy_proved")]
-    PolicyProved = 3,
-    #[serde(rename = "4_formally_verified")]
-    FormallyVerified = 4,
+    #[serde(rename = "3_policy_checked")]
+    PolicyChecked = 3,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,10 +75,6 @@ pub struct Claim {
     pub status: ClaimStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence_ref: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lean_theorem: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lean_axioms: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,7 +93,6 @@ pub struct ContextProofV2 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProofSummary {
     pub total_claims: usize,
-    pub proved: usize,
     pub passed: usize,
     pub failed: usize,
     pub skipped: usize,
@@ -125,7 +119,6 @@ impl ContextProofV2 {
     }
 
     pub fn recompute(&mut self) {
-        let mut proved = 0;
         let mut passed = 0;
         let mut failed = 0;
         let mut skipped = 0;
@@ -133,7 +126,6 @@ impl ContextProofV2 {
 
         for c in &self.claims {
             match c.status {
-                ClaimStatus::Proved => proved += 1,
                 ClaimStatus::Passed => passed += 1,
                 ClaimStatus::Failed => failed += 1,
                 ClaimStatus::Skipped => skipped += 1,
@@ -143,7 +135,6 @@ impl ContextProofV2 {
 
         self.summary = ProofSummary {
             total_claims: self.claims.len(),
-            proved,
             passed,
             failed,
             skipped,
@@ -152,15 +143,12 @@ impl ContextProofV2 {
 
         self.quality_level = if failed > 0 {
             QualityLevel::Provenance
-        } else if proved > 0 {
-            QualityLevel::FormallyVerified
         } else if self.claims.iter().any(|c| {
             c.kind == ClaimKind::ScopeCompliance
                 || c.kind == ClaimKind::PathjailCompliance
                 || c.kind == ClaimKind::BudgetCompliance
-        }) && self.claims.iter().all(|c| c.status != ClaimStatus::Failed)
-        {
-            QualityLevel::PolicyProved
+        }) {
+            QualityLevel::PolicyChecked
         } else if self
             .claims
             .iter()
@@ -183,7 +171,6 @@ impl ProofSummary {
     pub fn empty() -> Self {
         Self {
             total_claims: 0,
-            proved: 0,
             passed: 0,
             failed: 0,
             skipped: 0,
@@ -204,8 +191,6 @@ pub fn deterministic_claim(id: &str, text: &str, passed: bool) -> Claim {
             ClaimStatus::Failed
         },
         evidence_ref: None,
-        lean_theorem: None,
-        lean_axioms: None,
     }
 }
 
@@ -221,25 +206,6 @@ pub fn policy_claim(id: &str, text: &str, kind: ClaimKind, passed: bool) -> Clai
             ClaimStatus::Failed
         },
         evidence_ref: None,
-        lean_theorem: None,
-        lean_axioms: None,
-    }
-}
-
-pub fn lean_proved_claim(id: &str, text: &str, kind: ClaimKind, theorem: &str) -> Claim {
-    Claim {
-        id: id.to_string(),
-        text: text.to_string(),
-        kind,
-        verifier: VerifierKind::LeanProof,
-        status: ClaimStatus::Proved,
-        evidence_ref: None,
-        lean_theorem: Some(theorem.to_string()),
-        lean_axioms: Some(vec![
-            "propext".to_string(),
-            "Classical.choice".to_string(),
-            "Quot.sound".to_string(),
-        ]),
     }
 }
 
@@ -273,21 +239,6 @@ pub mod tests {
     }
 
     #[test]
-    fn lean_proof_reaches_level_4() {
-        let mut proof = ContextProofV2::new("run_4".into(), None);
-        proof.add_claim(deterministic_claim("c1", "paths valid", true));
-        proof.add_claim(lean_proved_claim(
-            "c2",
-            "excluded items never rendered",
-            ClaimKind::CompressionInvariant,
-            "excluded_items_never_rendered",
-        ));
-        assert_eq!(proof.quality_level, QualityLevel::FormallyVerified);
-        assert_eq!(proof.summary.proved, 1);
-        assert_eq!(proof.summary.passed, 1);
-    }
-
-    #[test]
     fn policy_claims_reach_level_3() {
         let mut proof = ContextProofV2::new("run_5".into(), None);
         proof.add_claim(policy_claim(
@@ -302,17 +253,28 @@ pub mod tests {
             ClaimKind::ScopeCompliance,
             true,
         ));
-        assert_eq!(proof.quality_level, QualityLevel::PolicyProved);
+        assert_eq!(proof.quality_level, QualityLevel::PolicyChecked);
+    }
+
+    #[test]
+    fn highest_level_is_a_runtime_policy_check() {
+        let json = serde_json::to_string(&QualityLevel::PolicyChecked).unwrap();
+        assert_eq!(json, "\"3_policy_checked\"");
+        assert!(
+            serde_json::from_str::<QualityLevel>("\"4_formally_verified\"").is_err(),
+            "no claim is checked against a proof artifact, so no level may say so"
+        );
+        assert!(serde_json::from_str::<ClaimStatus>("\"proved\"").is_err());
     }
 
     #[test]
     fn serialization_roundtrip() {
         let mut proof = ContextProofV2::new("run_6".into(), Some("sess_1".into()));
-        proof.add_claim(lean_proved_claim(
-            "c1",
+        proof.add_claim(policy_claim(
+            "api_surface_preserved",
             "API preserved",
             ClaimKind::ApiInvariant,
-            "api_surface_preserved",
+            true,
         ));
         let json = serde_json::to_string_pretty(&proof).unwrap();
         assert!(json.contains("ContextProofV2"));
@@ -325,13 +287,11 @@ pub mod tests {
     fn quality_level_ordering() {
         assert!(QualityLevel::Provenance < QualityLevel::Deterministic);
         assert!(QualityLevel::Deterministic < QualityLevel::Tested);
-        assert!(QualityLevel::Tested < QualityLevel::PolicyProved);
-        assert!(QualityLevel::PolicyProved < QualityLevel::FormallyVerified);
+        assert!(QualityLevel::Tested < QualityLevel::PolicyChecked);
     }
 
     #[test]
     fn claim_status_ordering() {
-        assert!(ClaimStatus::Proved < ClaimStatus::Passed);
         assert!(ClaimStatus::Passed < ClaimStatus::Failed);
         assert!(ClaimStatus::Failed < ClaimStatus::Skipped);
         assert!(ClaimStatus::Skipped < ClaimStatus::Unverified);
@@ -341,21 +301,10 @@ pub mod tests {
     fn empty_proof_summary_all_zeros() {
         let s = ProofSummary::empty();
         assert_eq!(s.total_claims, 0);
-        assert_eq!(s.proved, 0);
         assert_eq!(s.passed, 0);
         assert_eq!(s.failed, 0);
         assert_eq!(s.skipped, 0);
         assert_eq!(s.unverified, 0);
-    }
-
-    #[test]
-    fn lean_axioms_are_standard() {
-        let claim = lean_proved_claim("t", "test", ClaimKind::ApiInvariant, "thm");
-        let axioms = claim.lean_axioms.unwrap();
-        assert_eq!(axioms.len(), 3);
-        assert!(axioms.contains(&"propext".to_string()));
-        assert!(axioms.contains(&"Classical.choice".to_string()));
-        assert!(axioms.contains(&"Quot.sound".to_string()));
     }
 
     #[test]
@@ -368,8 +317,6 @@ pub mod tests {
             verifier: VerifierKind::Test,
             status: ClaimStatus::Skipped,
             evidence_ref: None,
-            lean_theorem: None,
-            lean_axioms: None,
         });
         assert_eq!(proof.summary.skipped, 1);
         assert_eq!(proof.summary.failed, 0);
@@ -386,8 +333,6 @@ pub mod tests {
             verifier: VerifierKind::Unverifiable,
             status: ClaimStatus::Unverified,
             evidence_ref: None,
-            lean_theorem: None,
-            lean_axioms: None,
         });
         assert_eq!(proof.summary.unverified, 1);
     }

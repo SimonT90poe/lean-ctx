@@ -298,33 +298,6 @@ pub fn compute_litm_efficiency_for_profile(
     (eff_without, eff_with)
 }
 
-#[cfg(test)]
-pub fn content_attention_efficiency(content: &str, profile: &LitmProfile) -> f64 {
-    use crate::core::attention_model;
-
-    let lines: Vec<&str> = content.lines().collect();
-    if lines.is_empty() {
-        return 0.0;
-    }
-
-    let importances: Vec<f64> = lines
-        .iter()
-        .enumerate()
-        .map(|(i, line)| {
-            let pos = i as f64 / (lines.len() - 1).max(1) as f64;
-            attention_model::combined_attention(
-                line,
-                pos,
-                profile.alpha,
-                profile.beta,
-                profile.gamma,
-            )
-        })
-        .collect();
-
-    attention_model::attention_efficiency(&importances, profile.alpha, profile.beta, profile.gamma)
-}
-
 fn short_path(path: &str) -> String {
     let parts: Vec<&str> = path.split('/').collect();
     if parts.len() <= 2 {

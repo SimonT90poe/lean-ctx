@@ -882,9 +882,10 @@ pub struct DiskStatusAll {
 
 fn disk_status_for_graph(project_root: &str) -> DiskStatus {
     // #696 C4: the property graph is the sole store. The logical graph-index
-    // view (file count) is sized/timed by `graph.meta.json`, which the mirror
-    // stamps on every build; `disk_status_for_code_graph` reports the raw
-    // SQLite store (nodes, graph.db) as a distinct facet.
+    // view (file count) is timed by `graph.meta.json`, which the mirror stamps
+    // on every build; `disk_status_for_code_graph` reports the raw SQLite store
+    // (nodes, graph.db size) as a distinct facet. The meta file's own size is
+    // not the index size, so none is reported here (#1914).
     let Some(dir) = graph_index::ProjectIndex::index_dir(project_root) else {
         return DiskStatus::default();
     };
@@ -897,7 +898,7 @@ fn disk_status_for_graph(project_root: &str) -> DiskStatus {
         graph_index::ProjectIndex::load(project_root).map(|idx| idx.files.len() as u64);
     DiskStatus {
         exists: true,
-        size_bytes: meta.as_ref().map(std::fs::Metadata::len),
+        size_bytes: None,
         file_count,
         modified_at: meta.and_then(|m| m.modified().ok()).map(format_time),
     }
@@ -913,7 +914,7 @@ fn disk_status_for_bm25(project_root: &str) -> DiskStatus {
     DiskStatus {
         exists: true,
         size_bytes: meta.as_ref().map(std::fs::Metadata::len),
-        file_count: None,
+        file_count: BM25Index::persisted_chunk_count(root),
         modified_at: meta.and_then(|m| m.modified().ok()).map(format_time),
     }
 }

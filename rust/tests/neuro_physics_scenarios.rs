@@ -7,9 +7,7 @@
 //! 4. Hebbian Cache + Boltzmann Eviction (Statistical Physics)
 //! 5. Predictive Prefetch (Free Energy Principle)
 //! 6. Homeostasis Memory Guard (Biology)
-//! 7. Predictive Coding Deltas (Rao & Ballard)
 //! 8. Multi-Scale Index (Renormalization Group)
-//! 9. Attention Context Assembly (Treisman)
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. SHELL ALLOWLIST — Real attack scenarios
@@ -504,88 +502,6 @@ mod homeostasis {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 6. PREDICTIVE CODING DELTAS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-mod predictive_coding {
-    use lean_ctx::core::predictive_coding::*;
-
-    #[test]
-    fn scenario_file_unchanged_between_reads() {
-        let output = "pub fn main() {}\npub fn helper() {}\n";
-        let delta = compute_delta("signatures", output, output).unwrap();
-
-        assert!(delta.added_lines.is_empty());
-        assert!(delta.removed_lines.is_empty());
-        assert_eq!(delta.unchanged_count, 2);
-        assert!(should_use_delta(&delta, 50));
-    }
-
-    #[test]
-    fn scenario_single_function_added() {
-        let prev = "pub fn main() {}\npub fn helper() {}\n";
-        let curr = "pub fn main() {}\npub fn helper() {}\npub fn new_api() {}\n";
-
-        let delta = compute_delta("signatures", prev, curr).unwrap();
-        assert_eq!(delta.added_lines.len(), 1);
-        assert!(delta.added_lines[0].contains("new_api"));
-        assert_eq!(delta.unchanged_count, 2);
-
-        assert!(should_use_delta(&delta, 100));
-    }
-
-    #[test]
-    fn scenario_large_refactoring_prefers_full_output() {
-        let prev = (0..50)
-            .map(|i| format!("pub fn old_{i}() {{}}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let curr = (0..50)
-            .map(|i| format!("pub fn new_{i}() {{}}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let delta = compute_delta("signatures", &prev, &curr).unwrap();
-
-        assert_eq!(delta.removed_lines.len(), 50);
-        assert_eq!(delta.added_lines.len(), 50);
-    }
-
-    #[test]
-    fn scenario_compact_format_is_token_efficient() {
-        let delta = ModeDelta {
-            mode: "map".to_string(),
-            added_lines: vec!["+ use serde::Serialize;".to_string()],
-            removed_lines: vec!["- use serde::Deserialize;".to_string()],
-            changed_lines: Vec::new(),
-            unchanged_count: 25,
-        };
-
-        let formatted = delta.format_compact();
-        assert!(formatted.lines().count() < 10);
-        assert!(formatted.contains("[delta:map]"));
-        assert!(formatted.contains("unchanged:25"));
-    }
-
-    #[test]
-    fn scenario_token_savings_calculation() {
-        let delta = ModeDelta {
-            mode: "signatures".to_string(),
-            added_lines: vec!["one".to_string()],
-            removed_lines: Vec::new(),
-            changed_lines: Vec::new(),
-            unchanged_count: 100,
-        };
-
-        let savings = delta.token_savings_estimate(1000);
-        assert!(
-            savings > 0.9,
-            "1 line delta vs 1000 tokens should save >90%, got {savings:.2}"
-        );
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // 7. MULTI-SCALE INDEX (Renormalization)
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -691,116 +607,6 @@ mod multiscale {
         assert!(index.meso_files.is_empty());
         assert!(index.macro_dirs.is_empty());
         assert!(index.search_meso(&["anything".to_string()], 5).is_empty());
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// 8. ATTENTION-WEIGHTED CONTEXT ASSEMBLY
-// ═══════════════════════════════════════════════════════════════════════════════
-
-mod attention_assembly {
-    use lean_ctx::core::attention_context::*;
-
-    #[test]
-    fn scenario_definitions_get_more_budget_than_boilerplate() {
-        let chunks = vec![
-            (
-                0,
-                "pub struct AuthService { pub fn authenticate(&self, user: &str, pass: &str) -> Result<Token, Error> { validate_credentials(user, pass)?; let token = generate_jwt(user); Ok(token) } }",
-                true,
-            ),
-            (
-                1,
-                "use std::io; use std::fmt; use std::collections::HashMap; use serde::{Serialize, Deserialize}; use tokio::sync::RwLock;",
-                false,
-            ),
-            (
-                2,
-                "// TODO: implement // TODO: implement // TODO: implement // placeholder // placeholder",
-                false,
-            ),
-        ];
-
-        let result = attention_weighted_assembly(&chunks, 3000);
-        assert_eq!(result.len(), 3);
-
-        assert!(
-            result[0].token_budget > result[1].token_budget,
-            "Definition ({}) should get more budget than imports ({})",
-            result[0].token_budget,
-            result[1].token_budget
-        );
-        assert!(
-            result[0].token_budget > result[2].token_budget,
-            "Definition ({}) should get more budget than TODOs ({})",
-            result[0].token_budget,
-            result[2].token_budget
-        );
-    }
-
-    #[test]
-    fn scenario_redundant_chunks_penalized() {
-        let common_content = "fn handle_request(req: Request) -> Response { let body = parse_body(req); validate(body); process(body) }";
-        let chunks = vec![
-            (0, common_content, true),
-            (1, common_content, false), // exact duplicate
-            (
-                2,
-                "fn totally_different_function() { let x = compute_something_unique(); transform(x); emit(x) }",
-                true,
-            ),
-        ];
-
-        let result = attention_weighted_assembly(&chunks, 3000);
-
-        assert!(
-            result[2].token_budget > result[1].token_budget,
-            "Unique chunk ({}) should get more budget than duplicate ({})",
-            result[2].token_budget,
-            result[1].token_budget
-        );
-    }
-
-    #[test]
-    fn scenario_budget_sums_approximately_to_total() {
-        let chunks = vec![
-            (0, "fn a() { complex_logic_here() }", true),
-            (1, "fn b() { other_logic() }", true),
-            (2, "fn c() { third_thing() }", false),
-        ];
-
-        let result = attention_weighted_assembly(&chunks, 3000);
-        let total_allocated: usize = result.iter().map(|r| r.token_budget).sum();
-
-        assert!(
-            total_allocated > 2000 && total_allocated < 4000,
-            "Total allocated ({total_allocated}) should be close to budget (3000)"
-        );
-    }
-
-    #[test]
-    fn scenario_single_chunk_gets_full_budget() {
-        let chunks = vec![(0, "fn important() { do_things() }", true)];
-        let result = attention_weighted_assembly(&chunks, 1000);
-        assert_eq!(result.len(), 1);
-        assert!(result[0].token_budget > 0);
-    }
-
-    #[test]
-    fn scenario_information_density_scoring() {
-        let high_density = compute_density(
-            "pub async fn authenticate_user(credentials: Credentials) -> Result<AuthToken, AuthError>",
-            true,
-        );
-        let low_density = compute_density(
-            "test test test test test test test test test test test test",
-            false,
-        );
-
-        assert!(
-            high_density > low_density * 2.0,
-            "High-density ({high_density:.3}) should be much higher than low-density ({low_density:.3})"
-        );
     }
 }
 

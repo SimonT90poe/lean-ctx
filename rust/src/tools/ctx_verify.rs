@@ -20,42 +20,16 @@ pub fn handle_proof(format: Option<&str>) -> Result<String, String> {
 
     extractor.verify_budget_compliance();
 
-    extractor.add_lean_proof(
-        "pathjail_no_escape",
-        "PathJail prevents directory traversal outside root",
-        crate::core::context_proof_v2::ClaimKind::PathjailCompliance,
-        "LeanCtxProofs.Policy.PathJail.jail_no_escape",
-    );
-    extractor.add_lean_proof(
-        "budget_monotonic",
-        "Budget consumption is monotonically increasing",
-        crate::core::context_proof_v2::ClaimKind::BudgetCompliance,
-        "LeanCtxProofs.Policy.BudgetEnforcement.spend_monotonic",
-    );
-    extractor.add_lean_proof(
-        "terse_quality_gate",
-        "Quality gate preserves paths and identifiers",
-        crate::core::context_proof_v2::ClaimKind::CompressionInvariant,
-        "LeanCtxProofs.Compression.TerseQuality.both_ok_passes",
-    );
-    extractor.add_lean_proof(
-        "terse_filter_subset",
-        "Terse filtering produces a subset of input",
-        crate::core::context_proof_v2::ClaimKind::CompressionInvariant,
-        "LeanCtxProofs.Compression.TerseEngine.filter_subset",
-    );
-
     let proof = extractor.finalize();
 
     match format.unwrap_or("json") {
         "summary" => {
             let s = &proof.summary;
             Ok(format!(
-                "ContextProofV2 · {} claims · Q{} ({:?})\n  proved: {} · passed: {} · failed: {} · skipped: {}",
+                "ContextProofV2 · {} claims · Q{} ({:?})\n  passed: {} · failed: {} · skipped: {}",
                 s.total_claims,
                 proof.quality_level as u8,
                 proof.quality_level,
-                s.proved,
                 s.passed,
                 s.failed,
                 s.skipped,
@@ -77,5 +51,23 @@ pub fn handle_stats(format: Option<&str>) -> Result<String, String> {
         _ => Ok(crate::core::verification_observability::format_compact(
             &snap,
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::handle_proof;
+
+    #[test]
+    fn proof_reports_only_claims_checked_at_runtime() {
+        let _data = crate::core::data_dir::isolated_data_dir();
+        let json = handle_proof(Some("json")).unwrap();
+        let proof: serde_json::Value = serde_json::from_str(&json).unwrap();
+        for claim in proof["claims"].as_array().unwrap() {
+            assert_eq!(claim["verifier"], "path_policy", "{claim}");
+        }
+        for unchecked in ["proved", "lean_theorem", "lean_axioms", "formally_verified"] {
+            assert!(!json.contains(unchecked), "{unchecked} in {json}");
+        }
     }
 }

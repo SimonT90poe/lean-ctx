@@ -814,6 +814,31 @@ impl BM25Index {
         dir.join("bm25_index.json")
     }
 
+    /// Chunk count of the persisted index without loading it (#1914): postcard
+    /// writes `chunks` — the first field — as a varint length prefix, so only
+    /// the first few decompressed bytes are read. `None` for the legacy JSON
+    /// format or an unreadable file; `Some(0)` for an index that holds nothing.
+    pub fn persisted_chunk_count(root: &Path) -> Option<u64> {
+        use std::io::Read;
+        let path = Self::index_file_path(root);
+        let file = std::fs::File::open(&path).ok()?;
+        let mut head: Box<dyn Read> = match path.extension().and_then(|e| e.to_str()) {
+            Some("zst") => Box::new(zstd::Decoder::new(file).ok()?),
+            Some("bin") => Box::new(file),
+            _ => return None,
+        };
+        let mut count = 0u64;
+        for shift in (0..64).step_by(7) {
+            let mut byte = [0u8; 1];
+            head.read_exact(&mut byte).ok()?;
+            count |= u64::from(byte[0] & 0x7f) << shift;
+            if byte[0] & 0x80 == 0 {
+                return Some(count);
+            }
+        }
+        None
+    }
+
     /// Ingest external `ContentChunk`s into the BM25 index.
     /// Converts each chunk to a `CodeChunk` (backward-compatible) and
     /// rebuilds the inverted index. Returns the number of chunks ingested.

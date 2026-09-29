@@ -7,8 +7,7 @@
 use std::path::Path;
 
 use super::context_proof_v2::{
-    Claim, ClaimKind, ClaimStatus, ContextProofV2, VerifierKind, deterministic_claim,
-    lean_proved_claim, policy_claim,
+    Claim, ClaimKind, ClaimStatus, ContextProofV2, VerifierKind, deterministic_claim, policy_claim,
 };
 
 pub struct ClaimExtractor {
@@ -106,12 +105,6 @@ impl ClaimExtractor {
                 ClaimStatus::Failed
             },
             evidence_ref: None,
-            lean_theorem: if passed {
-                Some("pinned_items_always_preserved".to_string())
-            } else {
-                None
-            },
-            lean_axioms: None,
         });
     }
 
@@ -136,11 +129,6 @@ impl ClaimExtractor {
 
         self.proof
             .add_claim(deterministic_claim("imports_preserved", &text, passed));
-    }
-
-    pub fn add_lean_proof(&mut self, id: &str, text: &str, kind: ClaimKind, theorem: &str) {
-        self.proof
-            .add_claim(lean_proved_claim(id, text, kind, theorem));
     }
 
     pub fn add_custom_claim(&mut self, claim: Claim) {
@@ -197,33 +185,31 @@ pub mod tests {
     }
 
     #[test]
-    fn lean_proof_integration() {
+    fn pathjail_escape_is_a_failed_claim() {
+        let root = tempfile::tempdir().unwrap();
         let mut ext = ClaimExtractor::new("test_5", None);
-        ext.add_lean_proof(
-            "pathjail_no_escape",
-            "PathJail prevents access outside root",
-            ClaimKind::PathjailCompliance,
-            "LeanCtxProofs.Policy.PathJail.jail_no_escape",
-        );
+        ext.verify_pathjail("/etc/passwd", root.path());
         let proof = ext.finalize();
-        assert_eq!(proof.summary.proved, 1);
-        assert!(proof.claims[0].lean_theorem.is_some());
+        assert_eq!(proof.summary.failed, 1);
+        assert_eq!(
+            proof.quality_level,
+            super::super::context_proof_v2::QualityLevel::Provenance
+        );
     }
 
     #[test]
     fn combined_extraction_computes_quality() {
+        let root = tempfile::tempdir().unwrap();
+        let inside = root.path().join("src.rs");
+        std::fs::write(&inside, "fn main() {}").unwrap();
         let mut ext = ClaimExtractor::new("test_6", None);
         ext.verify_no_secrets_in_output("clean code");
-        ext.add_lean_proof(
-            "excluded_never_rendered",
-            "Excluded items never in output",
-            ClaimKind::CompressionInvariant,
-            "LeanCtxProofs.Policy.ContextGovernance.excluded_items_never_rendered",
-        );
+        ext.verify_pathjail(&inside.to_string_lossy(), root.path());
         let proof = ext.finalize();
+        assert_eq!(proof.summary.passed, 2);
         assert_eq!(
             proof.quality_level,
-            super::super::context_proof_v2::QualityLevel::FormallyVerified
+            super::super::context_proof_v2::QualityLevel::PolicyChecked
         );
     }
 

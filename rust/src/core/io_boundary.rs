@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::core::{events, pathjail, roles, secret_detection};
+use crate::core::{events, pathjail, roles};
 
 /// Reads a file without following symlinks (TOCTOU protection).
 /// Falls back to regular read on non-Unix platforms.
@@ -51,64 +51,6 @@ pub fn read_file_lossy(path: &str) -> Result<String, std::io::Error> {
         return Err(std::io::Error::other(msg));
     }
     read_file_nofollow(path)
-}
-
-/// Result of a file read with secret scanning applied.
-pub struct ScannedRead {
-    pub content: String,
-    pub secret_matches: Vec<secret_detection::SecretMatch>,
-    pub was_redacted: bool,
-}
-
-fn redact_for_role(config_redact: bool, role_name: &str) -> bool {
-    config_redact || role_name.eq_ignore_ascii_case("regulated")
-}
-
-/// Reads a file and applies secret detection/redaction per config.
-///
-/// - `enabled=true, redact=false`: returns original content + warnings in `secret_matches`
-/// - `enabled=true, redact=true`: returns redacted content + `was_redacted=true`
-/// - `role=regulated`: redacts detected secrets even when `redact=false`
-/// - `enabled=false`: returns original content, no scanning
-pub fn read_file_scanned(path: &str) -> Result<ScannedRead, std::io::Error> {
-    let raw = read_file_lossy(path)?;
-    let cfg = crate::core::config::Config::load();
-    let sd = &cfg.secret_detection;
-    let role_name = roles::active_role_name();
-
-    if !sd.enabled {
-        return Ok(ScannedRead {
-            content: raw,
-            secret_matches: Vec::new(),
-            was_redacted: false,
-        });
-    }
-
-    let mut scan_config = sd.clone();
-    scan_config.redact = redact_for_role(sd.redact, &role_name);
-    let (content, matches) = secret_detection::scan_and_redact(&raw, &scan_config);
-
-    if !matches.is_empty() {
-        let names: Vec<&str> = matches.iter().map(|m| m.pattern_name).collect();
-        let mut unique: Vec<&str> = names;
-        unique.sort_unstable();
-        unique.dedup();
-        let msg = format!(
-            "[SECRET DETECTION] {} secret(s) found in {}: {}",
-            matches.len(),
-            path,
-            unique.join(", ")
-        );
-        events::emit_policy_violation(&role_name, "read_file", &msg);
-        tracing::warn!("{msg}");
-    }
-
-    let was_redacted = scan_config.redact && !matches.is_empty();
-    Ok(ScannedRead {
-        content,
-        secret_matches: matches,
-        was_redacted,
-    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -291,21 +233,6 @@ Docs: https://leanctx.com/docs/security/#ignore-gitignore"
 #[cfg(test)]
 pub mod tests {
     use super::*;
-
-    #[test]
-    fn regulated_role_forces_redaction_when_config_disabled() {
-        let mut config = crate::core::config::SecretDetectionConfig {
-            redact: false,
-            custom_patterns: vec!["TOP_SECRET".to_string()],
-            ..Default::default()
-        };
-        config.redact = redact_for_role(config.redact, "regulated");
-
-        let (content, matches) = secret_detection::scan_and_redact("token=TOP_SECRET", &config);
-
-        assert!(!matches.is_empty());
-        assert_eq!(content, "token=[REDACTED:custom_pattern]");
-    }
 
     #[cfg(unix)]
     #[test]

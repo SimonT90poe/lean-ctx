@@ -549,7 +549,14 @@ fn format_disk_line(ds: &crate::core::index_orchestrator::DiskStatus, count_labe
     if !ds.exists {
         return "not built".to_string();
     }
-    let mut parts = vec!["ready".to_string()];
+    // #1914: a persisted index that holds nothing is not "ready" — searches
+    // against it return nothing, and the user must be able to tell.
+    let state = if ds.file_count == Some(0) {
+        "empty"
+    } else {
+        "ready"
+    };
+    let mut parts = vec![state.to_string()];
     if let Some(count) = ds.file_count {
         parts.push(format!("{count} {count_label}"));
     }
@@ -580,6 +587,30 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn empty_index_is_not_reported_ready() {
+        use crate::core::index_orchestrator::DiskStatus;
+        let empty = DiskStatus {
+            exists: true,
+            size_bytes: Some(26),
+            file_count: Some(0),
+            modified_at: None,
+        };
+        assert_eq!(
+            format_disk_line(&empty, "chunks"),
+            "(empty, 0 chunks, 26 B)"
+        );
+        let built = DiskStatus {
+            file_count: Some(1200),
+            size_bytes: Some(9_437_184),
+            ..empty
+        };
+        assert_eq!(
+            format_disk_line(&built, "chunks"),
+            "(ready, 1200 chunks, 9.0 MB)"
+        );
     }
 
     #[test]

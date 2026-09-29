@@ -1,8 +1,17 @@
 # Attention-aware Layout Driver v1 (AttentionLayoutDriverV1)
 
-GitLab: `#2311`
+GitLab: `#2311` · GitHub: `#1915`
 
-LeanCTX kann Context nicht nur komprimieren, sondern auch **re-layouten**, damit relevante Teile an Positionen landen, die LLMs tatsächlich stärker beachten (“Lost in the Middle” → empirisch eher **L‑Curve** als U‑Curve).
+> **Status: nicht implementiert.** Kein Read-Pfad sortiert Inhalte um. Die
+> Profil-Keys `layout.enabled` / `layout.min_lines` werden aus Kompatibilitäts-
+> gründen weiterhin geparst und bei Profil-Vererbung gemerged, haben aber
+> **keine Wirkung**. Der frühere Treiber war ein Stub, der immer `skipped`
+> lieferte; er und die unverdrahteten Chunk-Helfer wurden in #1915 entfernt.
+> Die Contract-Version bleibt bestehen, bis eine Entfernung gemäss
+> [Deprecation-Policy](../../CONTRACTS.md#deprecation-policy) angekündigt ist.
+
+Die folgende Spezifikation beschreibt das **geplante** Verhalten, falls der
+Treiber je implementiert wird. Sie ist keine Aussage über den Ist-Zustand.
 
 ## Ziele
 
@@ -19,20 +28,18 @@ Per Profile:
 - `profile.layout.enabled = true|false`
 - `profile.layout.min_lines = <n>`
 
-Default: `enabled=false`.
+Default: `enabled=false`. Kein eingebautes Profil setzt `enabled=true`.
 
-## Semantik (v1)
+## Semantik (v1, geplant)
 
 - **Small files**: wenn `lines <= 5` (oder `< min_lines`) ⇒ keine Änderung.
-- **Large content**: ab `lines >= 15` wird Chunking versucht:
-  1. `detect_chunks(content)`
-  2. `order_for_attention(chunks, task_keywords)`
-  3. `render_with_bridges(ordered)`
+- **Large content**: ab `lines >= 15` wird Chunking versucht (Chunk-Erkennung,
+  Keyword-gewichtete Reihenfolge, Rendering mit Brücken-Kommentaren).
 - **Fallback**: sonst line-level scoring + stable tie-break (original index).
 
 ## Keywords
 
-Keywords stammen aus dem Task/Intent Kontext (z.B. `task` Argument), extrahiert via `task_relevance::parse_task_hints`.
+Keywords stammen aus dem Task/Intent Kontext (z.B. `task` Argument).
 
 ## Determinism Guarantees
 
@@ -40,8 +47,5 @@ Keywords stammen aus dem Task/Intent Kontext (z.B. `task` Argument), extrahiert 
 
 ## Relevanter Code
 
-- Driver: `rust/src/core/attention_layout_driver.rs`
-- Chunk reorder: `rust/src/core/semantic_chunks.rs`
-- Line-level reorder: `rust/src/core/neural/context_reorder.rs`
-- Learned attention curve: `rust/src/core/neural/attention_learned.rs`
-
+- Profil-Keys: `rust/src/core/profiles/types.rs` (`LayoutConfig`)
+- Contract-Version: `rust/src/core/contracts.rs` (`ATTENTION_LAYOUT_DRIVER_V1_SCHEMA_VERSION`)

@@ -162,7 +162,7 @@ metric for comparing useful AI work.
 
 - **Context Manager**: browser dashboard with real-time token tracking, compression stats, utilization gauge
 - **Budgets & SLOs**: profiles, roles, per-agent budgets, and throttling policies
-- **Context Proof** (`ctx_proof`, `ctx_verify`): 4-layer verification engine with CI drift gates
+- **Context Proof** (`ctx_proof`, `ctx_verify`): exportable audit trail (verifier, SLO, pipeline and provenance records) plus runtime-checked policy claims (PathJail per touched file, budget)
 
 ### 5. Shadow Recommendations — savings proof
 

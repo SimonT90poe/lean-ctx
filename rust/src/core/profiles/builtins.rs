@@ -238,10 +238,7 @@ fn builtin_review() -> Profile {
             ..CompressionConfig::default()
         },
         translation: TranslationConfig::default(),
-        layout: LayoutConfig {
-            enabled: Some(true),
-            ..LayoutConfig::default()
-        },
+        layout: LayoutConfig::default(),
         memory: crate::core::memory_policy::MemoryPolicyOverrides::default(),
         verification: crate::core::output_verification::VerificationConfig::default(),
         budget: BudgetConfig {
