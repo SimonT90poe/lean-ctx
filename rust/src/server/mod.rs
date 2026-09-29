@@ -277,15 +277,6 @@ mod tests {
     }
 
     #[test]
-    fn test_registry_tool_count_ssot() {
-        assert_eq!(
-            crate::server::registry::tool_count(),
-            78,
-            "Official MCP tool count drift! Update this test AND all docs when adding/removing tools."
-        );
-    }
-
-    #[test]
     fn production_server_always_has_registry() {
         // The list_tools fallback that serves static defs when `registry` is None
         // must stay unreachable in production: every public constructor funnels

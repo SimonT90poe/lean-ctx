@@ -177,8 +177,8 @@ Tip: open a ticket via the [New Compression Pattern](.github/ISSUE_TEMPLATE/comp
   exploration pattern (BM25 + static graph + AST, bounded turns, no session writes).
 - The MCP adapter (implements `McpTool`) lives in `rust/src/tools/registered/ctx_*.rs`:
   schema via `tool_def`, arg parsing, `ToolOutput`. Register it in
-  `rust/src/server/registry.rs` and bump the count SSOT in `rust/src/server/mod.rs`
-  (`test_registry_tool_count_ssot`).
+  `rust/src/server/registry.rs` (no hardcoded tool count to bump — the generated
+  inventory below is the SSOT).
 - For a CLI surface, add `rust/src/cli/<name>_cmd.rs` and route it in
   `rust/src/cli/dispatch/mod.rs` (+ `dispatch/help.rs`).
 - Regenerate and commit the SSOT artifacts:

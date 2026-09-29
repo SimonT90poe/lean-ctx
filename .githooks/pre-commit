@@ -77,39 +77,64 @@ while IFS= read -r file; do
 done < <(git diff --cached --name-only --diff-filter=d)
 
 # ── Rust quality checks ──────────────────────────────────────────
+# Change-aware: cargo only runs when the staged diff can change what Rust
+# compiles — anything under rust/ or packages/ (workspace members), or a
+# deletion/rename anywhere (include_str!/include_bytes! reach repo-root files).
+# Docs-, CI-, script- and skill-only commits skip the cargo steps; CI still
+# runs the full matrix. Force them with PRECOMMIT_FORCE_CARGO=1.
+staged_names=$(git diff --cached --name-only)
+staged_removed=$(git diff --cached --name-only --diff-filter=DR)
+if [ "${PRECOMMIT_FORCE_CARGO:-0}" != "1" ] \
+    && ! printf '%s\n' "$staged_names" | grep -qE '^(rust|packages)/' \
+    && [ -z "$staged_removed" ]; then
+    echo "pre-commit: no Rust-relevant files staged — skipping cargo checks."
+    exit 0
+fi
+
 cd "$REPO_ROOT/rust"
 
-if ! cargo fmt --check 2>/dev/null; then
-    echo "pre-commit: formatting check failed. Run 'cargo fmt' first."
-    exit 1
-fi
+# Each step prints a progress line and logs to its own file, so long clippy
+# runs are visibly alive and a failure shows the real compiler output instead
+# of a bare "check failed".
+LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lean-ctx-precommit.XXXXXX")"
+run_step() {
+    local label="$1" hint="$2" log started
+    shift 2
+    log="$LOG_DIR/$(printf '%s' "$label" | tr -c 'a-zA-Z0-9' '_').log"
+    started=$SECONDS
+    echo "pre-commit: ▸ $label ..."
+    if ! "$@" >"$log" 2>&1; then
+        echo "pre-commit: ✗ $label failed after $((SECONDS - started))s. $hint"
+        echo "──── last 80 lines of $log ────"
+        tail -n 80 "$log"
+        exit 1
+    fi
+    echo "pre-commit: ✓ $label ($((SECONDS - started))s)"
+}
+
+run_step "cargo fmt --check" "Run 'cargo fmt' first." \
+    cargo fmt --check
 
 # Production code: strict — unwrap_used is DENIED
-if ! cargo clippy --lib --bins --examples -- -D warnings -A clippy::too_many_lines 2>/dev/null; then
-    echo "pre-commit: clippy check failed (production). Fix warnings before committing."
-    exit 1
-fi
+run_step "clippy (production)" "Fix warnings before committing." \
+    cargo clippy --lib --bins --examples -- -D warnings -A clippy::too_many_lines
 
 # Test code: unwrap() is idiomatic in tests — allow it
-if ! cargo clippy --tests -- -D warnings -A clippy::too_many_lines -A clippy::unwrap_used 2>/dev/null; then
-    echo "pre-commit: clippy check failed (tests). Fix warnings before committing."
-    exit 1
-fi
+run_step "clippy (tests)" "Fix warnings before committing." \
+    cargo clippy --tests -- -D warnings -A clippy::too_many_lines -A clippy::unwrap_used
 
 # Generated reference docs must match the tool/config definitions —
 # the CI Documentation job runs the same check and fails otherwise.
-if git diff --cached --name-only | grep -qE '^rust/src/(tools|tool_defs|core/config)'; then
-    if ! cargo run --quiet --example gen_docs --features dev-tools -- --check 2>/dev/null; then
-        echo "pre-commit: generated docs out of date. Run: cd rust && cargo run --example gen_docs --features dev-tools"
-        exit 1
-    fi
+if printf '%s\n' "$staged_names" | grep -qE '^rust/src/(tools|tool_defs|core/config)'; then
+    run_step "generated docs" "Run: cd rust && cargo run --example gen_docs --features dev-tools" \
+        cargo run --quiet --example gen_docs --features dev-tools -- --check
 fi
 
 # The committed testbench recording must match the fixtures + assembly/judge framing —
 # the CI Documentation job runs the same check (#611).
-if git diff --cached --name-only | grep -qE '^rust/(eval/testbench/|src/core/eval_ab/)'; then
-    if ! cargo run --quiet --example gen_testbench_recording --features dev-tools -- --check 2>/dev/null; then
-        echo "pre-commit: testbench recording out of date. Run: cd rust && cargo run --example gen_testbench_recording --features dev-tools"
-        exit 1
-    fi
+if printf '%s\n' "$staged_names" | grep -qE '^rust/(eval/testbench/|src/core/eval_ab/)'; then
+    run_step "testbench recording" "Run: cd rust && cargo run --example gen_testbench_recording --features dev-tools" \
+        cargo run --quiet --example gen_testbench_recording --features dev-tools -- --check
 fi
+
+rm -rf "$LOG_DIR"

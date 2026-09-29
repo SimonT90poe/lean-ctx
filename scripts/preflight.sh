@@ -276,7 +276,7 @@ fi
 # unless LEAN_CTX_PREFLIGHT_STRICT_TESTS=1. Never triggers for docs/metadata-only
 # changes (CONTRACT_CHANGED stays 0).
 if [[ "$CLASSIFY_OK" -eq 1 && "$CONTRACT_CHANGED" -eq 1 && "$TEST_SIGNAL" -eq 0 ]]; then
-  MSG="contract code changed (proxy/tools/config-schema) but the diff adds no test signal — add/adjust tests or justify"
+  MSG="contract code changed (proxy/tools/config-schema) but the diff adds no test signal — if the contract's behaviour changed, extend the nearest existing test (AGENTS.md › Test Policy); if existing tests already cover it, say so in the PR"
   if [[ "${LEAN_CTX_PREFLIGHT_STRICT_TESTS:-0}" == "1" ]]; then
     printf "\n${RED}▶ No-test policy (#849)${RESET}\n  ${RED}%s${RESET}\n" "$MSG"
     FAILED+=("No-test policy: $MSG")
