@@ -5,6 +5,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — hook rewrites no longer hide content from agents (#1916, #1917, #1918)
+
+- #1916: a subagent's first read of a file its parent (or a sibling) already
+  read was replaced by an "already in context" stub, although the subagent had
+  never seen the content. Read dedup is now keyed per agent within a session;
+  the parent's own re-reads are still deduplicated.
+- #1917: `grep NEEDLE big.log` reported "0 matches" when the named file was
+  larger than 512 KB, because the directory-walk size cap also applied to a
+  file named explicitly. A single named file is now searched up to 64 MB.
+  Skipped large files are named in the note, and `lean-ctx grep` exits `2`
+  (not `1`, "not found") when the search skipped files or hit its time
+  budget, and on errors.
+- #1918: commands with unquoted globs (`cat *.md`, `grep x src/*.rs`) were
+  rewritten to `lean-ctx read`/`grep`, which received the literal pattern
+  instead of the shell's expansion. They are now wrapped as a whole so the
+  shell still expands the glob. Quoted patterns (`'foo.*bar'`,
+  `"weird[1].md"`) still take the direct rewrite.
+
 ### Changed — anonymous product telemetry v2, on by default
 
 - The opt-in v1 heartbeat is replaced by a strict, typed batch
