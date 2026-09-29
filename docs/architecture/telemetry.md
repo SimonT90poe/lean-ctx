@@ -23,10 +23,11 @@ Nicht behauptet wird „niemals personenbezogene Daten": Eine zufällige, dauerh
 Installations-ID kann in einschlägigen Rechtsordnungen als pseudonymes
 personenbezogenes Datum gelten.
 
-## Standard-an mit Anzeigegatter
+## Standard-an
 
-`TelemetryConfig` trägt vier Felder: `enabled` (Standard `true`), `preference`,
-`notice_shown` und `last_heartbeat` als Tagesdebounce.
+`TelemetryConfig` trägt `enabled` (Standard `true`), `preference` und
+`last_heartbeat`. Die Zustimmung erfolgt bei der Installation; einen
+zusätzlichen Laufzeithinweis als Sendegatter gibt es nicht.
 
 Entscheidend ist das Präferenzmodell:
 
@@ -37,14 +38,12 @@ enum TelemetryPreference { DefaultOn, ExplicitlyEnabled, ExplicitlyDisabled }
 Es unterscheidet „standardmässig an, weil nie gewählt" von „bewusst gewählt".
 **Ein früheres `telemetry off` wird bei der Migration nie überschrieben.**
 
-`notice_shown` ist ein hartes Gatter: Vor der ersten Übertragung muss der
-einmalige Hinweis verarbeitet sein. Standard-an darf nicht verborgen geschehen.
-
 Abschaltwege, die respektiert werden müssen: `DO_NOT_TRACK=1`,
 `LEAN_CTX_TELEMETRY=off`, `telemetry.enabled = false` sowie eine zentrale
 Organisations- oder Netzwerkpolitik. **Keine Telemetrie darf eine strengere
-Richtlinie umgehen.** In Headless- und CI-Umgebungen wird kein interaktiver
-Hinweis gedruckt, und Telemetrie blockiert den Prozess nie.
+Richtlinie umgehen.** Eine unlesbare globale Konfiguration gilt als Opt-out
+(fail-closed): Es wird weder gesammelt noch gesendet. Telemetrie blockiert den
+Prozess nie.
 
 ## Harte Verbote
 
@@ -94,8 +93,8 @@ lean-ctx telemetry delete-remote
 
 `status` trennt die **gespeicherte Präferenz** (`Preference`) von der
 **tatsächlichen Sendefähigkeit** (`Sending`) und nennt bei Inaktivität deren
-Grund — ausstehender Einmalhinweis, `DO_NOT_TRACK` / `LEAN_CTX_TELEMETRY` oder
-das persistierte Opt-out. Die Entscheidung stammt dabei ausschliesslich aus
+Grund — `DO_NOT_TRACK` / `LEAN_CTX_TELEMETRY`, das persistierte Opt-out oder
+eine unlesbare Konfiguration. Die Entscheidung stammt dabei ausschliesslich aus
 `TelemetryConfig::send_eligible`, also derselben Instanz, die auch den
 Sendepfad freigibt.
 
@@ -116,16 +115,35 @@ Offline-Abläufen. Netzwerkfehler degradieren still mit Debug-Diagnose. Es wird
 kein Prozess je Ereignis gestartet.
 
 Der v2-Batch-Sender liest die globale Konfiguration und beide Abschaltvariablen
-direkt vor dem HTTP-Aufruf erneut. Ungültige Konfiguration, Opt-out und ein
-fehlender Hinweis verhindern diesen Aufruf; ein bereits laufender Request wird
-dadurch nicht rückwirkend abgebrochen. Der POST verwendet ein globales
-Transportlimit von zehn Sekunden.
+direkt vor dem HTTP-Aufruf erneut. Ungültige Konfiguration und Opt-out
+verhindern diesen Aufruf; ein bereits laufender Request wird dadurch nicht
+rückwirkend abgebrochen. Hintergrundsendungen nutzen ein kurzes, die Sendung
+beim Beenden ein noch kürzeres Transportlimit.
 
-Neue Tagesbatches werden unter der Aggregate-Dateisperre anhand **eines
-UTC-Tagesbuckets** zugelassen und gestempelt. Ein bereits bestätigter Bucket
-wird nicht erneut erzeugt. Unbestätigte Batches behalten dagegen ihre exakten
-Bytes auch über Tageswechsel; die Zustellung ist deshalb **at least once**,
-nicht exactly once. Aggregate-, One-shot- und Ledger-Sperren verwenden einen
+### Untertägiger, kumulativer Versand
+
+Zähler werden **je UTC-Tag** geführt (`days`: Tagessumme + zuletzt bestätigte
+Summe). Jede Sendung trägt die **vollständige laufende Tagessumme**, nicht ein
+Delta. Der Server ersetzt je Installation und Tag (`ON CONFLICT … DO UPDATE`),
+wiederholte Sendungen desselben Tages sind daher idempotent und kein
+Doppelzählen möglich.
+
+- Ausgelöst wird periodisch aus dem MCP-Server (alle zehn Tool-Aufrufe
+  geprüft) und beim Beenden des Servers. Auch Nutzer mit nur einem aktiven Tag
+  liefern so ihre Tool-Zahlen.
+- Zulassung unter der Aggregate-Sperre: höchstens acht Versuche je Tag (unter
+  dem Server-Limit von zehn); periodische Sendungen lassen einen Versuch für
+  das Beenden frei. Nach einer bestätigten Sendung wächst der Abstand ab 15
+  Minuten exponentiell (max. 2 h), beim Beenden gilt ein flacher Abstand von
+  5 Minuten. Fehlversuche werden ab 60 s exponentiell zurückgestellt. Ein
+  unveränderter, bereits bestätigter Tag wird ohne Versuch abgelehnt.
+- Ein Batch enthält zuerst den heutigen Tag, danach unbestätigte abgeschlossene
+  Tage (älteste zuerst) unter ihrem **eigenen** Tagesbucket. Höchstens sieben
+  abgeschlossene Tage werden lokal zurückgehalten.
+
+Unbestätigte Batches behalten ihre exakten Bytes auch über Tageswechsel; die
+Zustellung ist deshalb **at least once**, nicht exactly once — dank der
+Ersetzungssemantik ohne Doppelzählung. Aggregate-, One-shot- und Ledger-Sperren verwenden einen
 750-ms-Akquisitionsetat. Bei Überlast bleibt eine Bestätigung wiederholbar;
 Lösch-/Rotationsbefehle müssen einen Sperrfehler melden. Das ist keine Frist
 für Dateisystem-I/O und keine Transaktion über sämtliche lokalen Dateien.
@@ -158,15 +176,13 @@ geschrieben werden kann; daraus folgt keine Exactly-once-Garantie.
   ohne Rechtsprüfung nicht behauptet werden.
 - Die Prüfliste für Schweizer DSG- und DSGVO-Anwendbarkeit ist noch zu
   erstellen (§28).
-- Der einmalige Hinweistext ist im Produkt noch gegen den geforderten Wortlaut
-  abzugleichen.
 - Ob `delete-remote` eine bestätigte serverseitige Löschung erreicht, ist nicht
   belegt.
 
 ## Mindestabnahme
 
-Ein Neuinstall sendet nichts, bevor der Hinweis verarbeitet ist; ein früheres
-explizites Opt-out überlebt die Migration; `DO_NOT_TRACK=1` unterdrückt jede
+Tool-Zahlen erreichen den Server noch am selben Tag unter dem richtigen
+Tagesbucket; ein früheres explizites Opt-out überlebt die Migration; `DO_NOT_TRACK=1` unterdrückt jede
 Übertragung; `telemetry show` zeigt exakt die sendefähige Nutzlast; ein
 Ereignis mit unbekanntem Feld wird abgewiesen; kein verbotenes Feld erscheint
 in irgendeiner Nutzlast; das Ledger enthält Hashes statt Inhalten; und ein

@@ -43,7 +43,7 @@ pub struct Config {
     pub slow_command_threshold_ms: u64,
     #[serde(default = "serde_defaults::default_theme")]
     pub theme: String,
-    /// Privacy-safe default-on telemetry with explicit opt-out and notice gate.
+    /// Privacy-safe default-on telemetry with explicit and environment opt-outs.
     #[serde(default)]
     pub telemetry: TelemetryConfig,
     #[serde(default)]
