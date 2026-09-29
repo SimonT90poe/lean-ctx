@@ -9,6 +9,64 @@ use crate::core::billing::Plan;
 use crate::core::data_dir::test_env_lock;
 
 #[test]
+fn test_processes_never_reach_a_remote_cloud_endpoint() {
+    for launched_by_cargo in [false, true] {
+        for remote in [
+            "https://api.leanctx.com",
+            "http://10.0.0.1:8080",
+            "http://localhost.evil.com",
+            "http://127.0.0.1@api.leanctx.com",
+            "ftp://127.0.0.1",
+            "127.0.0.1:9",
+        ] {
+            assert!(
+                !cloud_endpoint_allowed(remote, launched_by_cargo),
+                "{remote}"
+            );
+        }
+        for loopback in [
+            "http://127.0.0.1:9",
+            "http://127.3.2.1",
+            "http://localhost:8088/prefix",
+            "https://LOCALHOST",
+            "http://[::1]:9",
+        ] {
+            assert!(
+                cloud_endpoint_allowed(loopback, launched_by_cargo),
+                "{loopback}"
+            );
+        }
+    }
+}
+
+#[test]
+fn api_url_redirects_test_processes_away_from_production() {
+    let _lock = crate::core::data_dir::test_env_lock();
+    let previous = std::env::var_os("LEAN_CTX_API_URL");
+
+    // Every cloud call (feedback, stats, wrapped, telemetry) builds on api_url,
+    // so the default and any remote override must land on the loopback sink.
+    crate::test_env::remove_var("LEAN_CTX_API_URL");
+    assert_eq!(api_url(), "http://127.0.0.1:9");
+    crate::test_env::set_var("LEAN_CTX_API_URL", "https://api.leanctx.com");
+    assert_eq!(api_url(), "http://127.0.0.1:9");
+    crate::test_env::set_var("LEAN_CTX_API_URL", "http://127.0.0.1:8088");
+    assert_eq!(api_url(), "http://127.0.0.1:8088");
+
+    match previous {
+        Some(value) => crate::test_env::set_var("LEAN_CTX_API_URL", value),
+        None => crate::test_env::remove_var("LEAN_CTX_API_URL"),
+    }
+}
+
+#[test]
+fn cargo_test_processes_are_recognised_as_cargo_launched() {
+    // Children spawned by integration tests inherit this, which is what keeps
+    // the release binary under test from reaching production telemetry.
+    assert!(launched_by_cargo());
+}
+
+#[test]
 fn telemetry_delete_response_requires_explicit_confirmation() {
     assert!(deletion_confirmed(200, r#"{"deleted":true}"#).unwrap());
     assert!(!deletion_confirmed(204, "").unwrap());
@@ -65,7 +123,7 @@ fn telemetry_test_config(contents: &str) {
     std::fs::write(path, contents).unwrap();
 }
 
-const TELEMETRY_ALLOWED: &str = "[telemetry]\nenabled = true\nnotice_shown = true\n";
+const TELEMETRY_ALLOWED: &str = "[telemetry]\nenabled = true\n";
 
 fn telemetry_test_batch() -> crate::core::telemetry_v2::TelemetryBatchV2 {
     use crate::core::telemetry_v2::{ClientFamily, DistributionChannel};
@@ -128,9 +186,8 @@ fn telemetry_send_rechecks_config_and_environment_before_any_connection() {
     let stale = crate::core::config::Config::try_load_global().unwrap();
     assert!(stale.telemetry.send_eligible(None, None));
     for config in [
-        "[telemetry]\nenabled = false\nnotice_shown = true\n",
-        "[telemetry]\nenabled = true\nnotice_shown = false\n",
-        "[telemetry]\nenabled = true\nnotice_shown = true\npreference = 'explicitly_disabled'\n",
+        "[telemetry]\nenabled = false\n",
+        "[telemetry]\nenabled = true\npreference = 'explicitly_disabled'\n",
     ] {
         telemetry_test_config(config);
         assert_eq!(

@@ -746,3 +746,64 @@ fn result_cap_is_announced_instead_of_looking_exhaustive() {
         "an exhaustive search must not warn about a cap it never reached: {complete}"
     );
 }
+
+/// ~600 KB of text with one needle near the end: above `MAX_FILE_SIZE`,
+/// below `MAX_EXPLICIT_FILE_SIZE`.
+fn large_log(needle: &str) -> String {
+    let mut body = "2026-09-29 INFO routine line without anything special\n".repeat(11_000);
+    body.push_str(needle);
+    body.push('\n');
+    assert!(body.len() as u64 > MAX_FILE_SIZE);
+    body
+}
+
+#[test]
+fn explicitly_named_large_file_is_searched() {
+    // #1917: `grep NEEDLE big.log` must look inside the file the caller named,
+    // not report "0 matches" because the file exceeds the directory-walk cap.
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("big.log");
+    std::fs::write(&file, large_log("NEEDLE_1917 found")).unwrap();
+    let out = handle(
+        "NEEDLE_1917",
+        file.to_string_lossy().as_ref(),
+        None,
+        10,
+        CrpMode::Off,
+        true,
+        true,
+        false,
+    )
+    .text;
+    assert!(out.starts_with("1 matches"), "{out}");
+    assert!(out.contains("NEEDLE_1917 found"), "{out}");
+}
+
+#[test]
+fn directory_walk_names_the_large_files_it_skipped() {
+    // #1917: a skipped file must be named so the caller can search it directly.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("big.log"), large_log("NEEDLE_1917")).unwrap();
+    std::fs::write(dir.path().join("small.txt"), "nothing here\n").unwrap();
+    let out = handle(
+        "NEEDLE_1917",
+        dir.path().to_string_lossy().as_ref(),
+        None,
+        10,
+        CrpMode::Off,
+        true,
+        true,
+        false,
+    )
+    .text;
+    assert!(out.starts_with("0 matches"), "{out}");
+    assert!(out.contains("large files skipped"), "{out}");
+    assert!(out.contains("big.log"), "skipped file must be named: {out}");
+}
+
+#[test]
+fn name_skipped_caps_the_list() {
+    let names: Vec<String> = ["a", "b", "c"].iter().map(|s| (*s).to_string()).collect();
+    assert_eq!(name_skipped(&names, 3), "a, b, c");
+    assert_eq!(name_skipped(&names, 7), "a, b, c, +4 more");
+}

@@ -12,8 +12,19 @@ fn credentials_path() -> PathBuf {
     config_dir().join("credentials.json")
 }
 
+/// Base URL of the lean-ctx cloud API. Unit tests and cargo-launched binaries
+/// get the discard port instead of any non-loopback endpoint, so test fixtures
+/// (telemetry probes, feedback, stats, wrapped cards) can never reach
+/// production; their requests fail fast with "connection refused".
 pub fn api_url() -> String {
-    std::env::var("LEAN_CTX_API_URL").unwrap_or_else(|_| "https://api.leanctx.com".to_string())
+    const LOOPBACK_SINK: &str = "http://127.0.0.1:9";
+    let configured =
+        std::env::var("LEAN_CTX_API_URL").unwrap_or_else(|_| "https://api.leanctx.com".to_string());
+    if cloud_endpoint_allowed(&configured, launched_by_cargo()) {
+        configured
+    } else {
+        LOOPBACK_SINK.to_string()
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -463,6 +474,38 @@ pub fn submit_product_feedback(payload: &serde_json::Value) -> Result<String, St
     Ok(json["message"].as_str().unwrap_or("Thanks").to_string())
 }
 
+/// Cargo exports `CARGO_PKG_NAME` to `cargo test` / `cargo run` processes and
+/// every child they spawn, so integration tests driving the binary carry it too.
+fn launched_by_cargo() -> bool {
+    std::env::var("CARGO_PKG_NAME").is_ok_and(|name| name == env!("CARGO_PKG_NAME"))
+}
+
+/// Unit tests and cargo-launched binaries may only talk to a loopback
+/// endpoint; otherwise test fixtures would pollute production data.
+fn cloud_endpoint_allowed(base_url: &str, launched_by_cargo: bool) -> bool {
+    if !cfg!(test) && !launched_by_cargo {
+        return true;
+    }
+    let Some(authority) = base_url
+        .strip_prefix("http://")
+        .or_else(|| base_url.strip_prefix("https://"))
+        .and_then(|rest| rest.split(['/', '?', '#']).next())
+    else {
+        return false;
+    };
+    if authority.contains('@') {
+        return false;
+    }
+    let host = match authority.strip_prefix('[') {
+        Some(bracketed) => bracketed.split(']').next().unwrap_or_default(),
+        None => authority.split(':').next().unwrap_or_default(),
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 /// Send one validated telemetry-v2 daily batch. No authentication required.
 pub fn telemetry_v2_batch(
     batch: &crate::core::telemetry_v2::TelemetryBatchV2,
@@ -470,7 +513,7 @@ pub fn telemetry_v2_batch(
     telemetry_v2_batch_with_timeout(batch, std::time::Duration::from_secs(10))
 }
 
-fn telemetry_v2_batch_with_timeout(
+pub(crate) fn telemetry_v2_batch_with_timeout(
     batch: &crate::core::telemetry_v2::TelemetryBatchV2,
     timeout: std::time::Duration,
 ) -> Result<String, String> {

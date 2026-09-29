@@ -59,6 +59,50 @@ fn expansion_chars_keep_the_agents_own_quoting() {
     );
 }
 
+/// #1918: the direct rewrites re-quote every path, so an unquoted glob the
+/// calling shell would have expanded reached `lean-ctx read`/`grep` as a
+/// literal, missing path ("file not found"). Such commands must keep the
+/// agent's own text — native, or inside the `-c` wrap — never a direct rewrite.
+/// Quoted metacharacters are literal to the shell too and keep the rewrite.
+#[test]
+fn unquoted_globs_never_take_a_direct_rewrite() {
+    for cmd in [
+        "tail -5 handover/*-alpha/FILE.md",
+        "cat handover/*-alpha/FILE.md",
+        "head -3 handover/*-alpha/FILE.md",
+        "tail -3 handover/2026-09-29-?lpha/FILE.md",
+        "cat src/[id].tsx",
+        "cat docs/{a,b}.md",
+        "grep -n NEEDLE_MARKER u*.txt",
+        "rg -n foo src/*.rs",
+    ] {
+        let r = rewrite_candidate(cmd, "lean-ctx");
+        assert!(
+            r.is_none() || r == Some(expect_wrapped(cmd, "lean-ctx")),
+            "{cmd} → {r:?}"
+        );
+    }
+    assert_eq!(
+        rewrite_candidate("grep -n NEEDLE_MARKER u*.txt", "lean-ctx"),
+        Some(expect_wrapped("grep -n NEEDLE_MARKER u*.txt", "lean-ctx")),
+        "grep keeps the glob inside the -c wrap"
+    );
+    // Escaped or quoted metacharacters are literal: the direct rewrite stays.
+    assert_eq!(
+        rewrite_candidate("grep -n 'foo.*bar' src/main.rs", "lean-ctx"),
+        Some("lean-ctx grep 'foo.*bar' src/main.rs".to_owned())
+    );
+    assert_eq!(
+        rewrite_candidate(r#"cat "weird[1].md""#, "lean-ctx"),
+        Some("lean-ctx read 'weird[1].md'".to_owned())
+    );
+    // Chains: only the glob-free segment is rewritten.
+    assert_eq!(
+        rewrite_candidate("cat a.md && cat b/*.md", "lean-ctx"),
+        Some("lean-ctx read a.md && cat b/*.md".to_owned())
+    );
+}
+
 /// #1865: a lean-ctx binary under a path with a space (Windows: `C:\Program
 /// Files\...`) must be quoted in the direct rewrites too, or the calling shell
 /// splits it and fails with exit 127.

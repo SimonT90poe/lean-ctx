@@ -6,6 +6,7 @@ mod interactive;
 pub mod output_policy;
 mod pipeline;
 pub(crate) mod platform;
+pub(crate) mod process_tree;
 mod redact;
 pub(crate) mod reentry;
 pub(crate) mod tee_policy;
