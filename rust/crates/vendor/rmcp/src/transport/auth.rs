@@ -1929,10 +1929,17 @@ impl AuthorizationManager {
     }
 
     async fn discover_resource_metadata_url(&self) -> Result<Option<Url>, AuthError> {
+        // lean-ctx patch (#1391): only a 401 with a `resource_metadata` pointer
+        // counts here. A 200 from the MCP endpoint itself is a status page
+        // (TwinMind answers `GET /mcp` with `{"status":"ok",…}`), not RFC 9728
+        // metadata; taking it as such fails validation for lack of `resource`
+        // before the well-known paths below are ever tried.
         if let Ok(Some(resource_metadata_url)) =
             self.fetch_resource_metadata_url(&self.base_url).await
         {
-            return Ok(Some(resource_metadata_url));
+            if resource_metadata_url != self.base_url {
+                return Ok(Some(resource_metadata_url));
+            }
         }
 
         // If the primary URL doesn't use WWW-Authenticate, try oauth-protected-resource discovery.
@@ -3308,6 +3315,33 @@ mod tests {
                     "https://mcp.example.com/redirected"
                 ]
             )
+        );
+    }
+
+    /// lean-ctx patch (#1391): an MCP endpoint that answers GET with a 200
+    /// status page must not be mistaken for its own resource metadata — the
+    /// well-known path has to be probed instead.
+    #[tokio::test]
+    async fn a_status_page_on_the_endpoint_is_not_resource_metadata() {
+        let client = RecordingOAuthHttpClient::with_responses(vec![
+            http_response(200, serde_json::json!({"status": "ok"})),
+            http_response(
+                200,
+                serde_json::json!({"resource": "https://mcp.example.com/mcp"}),
+            ),
+        ]);
+        let manager = AuthorizationManager::new_with_oauth_http_client(
+            "https://mcp.example.com/mcp",
+            Arc::new(client.clone()),
+        )
+        .await
+        .unwrap();
+
+        let found = manager.discover_resource_metadata_url().await.unwrap();
+
+        assert_eq!(
+            found.as_ref().map(Url::as_str),
+            Some("https://mcp.example.com/.well-known/oauth-protected-resource/mcp")
         );
     }
 
