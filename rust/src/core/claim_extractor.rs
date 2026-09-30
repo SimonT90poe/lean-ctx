@@ -185,7 +185,7 @@ pub mod tests {
     }
 
     #[test]
-    fn pathjail_escape_is_a_failed_claim() {
+    fn pathjail_claim_reports_what_the_build_enforces() {
         // Hold the env lock with a clean config: parallel pathjail tests set
         // LEAN_CTX_ALLOW_PATH=/ under that lock, which would admit any path.
         let _iso = crate::core::data_dir::isolated_data_dir();
@@ -196,11 +196,25 @@ pub mod tests {
         let mut ext = ClaimExtractor::new("test_5", None);
         ext.verify_pathjail(&escaped.to_string_lossy(), root.path());
         let proof = ext.finalize();
-        assert_eq!(proof.summary.failed, 1);
-        assert_eq!(
-            proof.quality_level,
-            super::super::context_proof_v2::QualityLevel::Provenance
-        );
+        // A normal build rejects the escape and must say so. The `no-jail`
+        // build (part of `--all-features`) admits every path, so the claim
+        // must honestly report that the path was allowed.
+        let (failed, passed, level) = if cfg!(feature = "no-jail") {
+            (
+                0,
+                1,
+                super::super::context_proof_v2::QualityLevel::PolicyChecked,
+            )
+        } else {
+            (
+                1,
+                0,
+                super::super::context_proof_v2::QualityLevel::Provenance,
+            )
+        };
+        assert_eq!(proof.summary.failed, failed);
+        assert_eq!(proof.summary.passed, passed);
+        assert_eq!(proof.quality_level, level);
     }
 
     #[test]
