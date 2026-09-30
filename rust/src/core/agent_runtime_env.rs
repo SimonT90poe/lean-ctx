@@ -316,13 +316,27 @@ fn parse_ps_environ(output: &str) -> BTreeMap<String, String> {
     result
 }
 
+/// Create-only: a hook `capture()` can land while the (slow, `ps`-based) probe
+/// runs, and the probe must never replace it with the parent's older env.
+/// `create_new` is atomic against that race and refuses existing symlinks.
 fn persist_probed_vars(path: &Path, vars: &BTreeMap<String, String>) {
+    use std::io::Write;
     let payload = serde_json::json!({ "vars": vars, "captured_at": now_secs() });
-    if let Ok(json) = serde_json::to_string_pretty(&payload) {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = crate::config_io::write_atomic(path, &json);
+    let Ok(json) = serde_json::to_string_pretty(&payload) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    if let Ok(mut file) = options.open(path) {
+        let _ = file.write_all(json.as_bytes());
     }
 }
 
@@ -367,6 +381,23 @@ mod tests {
         assert_eq!(
             loaded.get("CODEX_THREAD_ID").map(String::as_str),
             Some("thread-roundtrip")
+        );
+    }
+
+    #[test]
+    fn probe_persist_never_replaces_a_concurrent_capture() {
+        let _iso = crate::core::data_dir::isolated_data_dir();
+        crate::test_env::set_var("CODEX_THREAD_ID", "thread-from-hook");
+        capture();
+        crate::test_env::remove_var("CODEX_THREAD_ID");
+
+        // A load() that saw no file before the capture finishes its probe now.
+        let probed = BTreeMap::from([("CLAUDE_PID".to_string(), "1".to_string())]);
+        persist_probed_vars(&store_path().unwrap(), &probed);
+
+        assert_eq!(
+            load().get("CODEX_THREAD_ID").map(String::as_str),
+            Some("thread-from-hook")
         );
     }
 

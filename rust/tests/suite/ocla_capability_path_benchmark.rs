@@ -79,7 +79,7 @@ fn compression_provider_uses_the_full_registry_capability_path() {
     );
 
     let expected: CapabilityManifestV1 = serde_json::from_str(include_str!(
-        "../../docs/contracts/ocla/capability-manifests/leanctx/context-optimization-v1.json"
+        "../../../docs/contracts/ocla/capability-manifests/leanctx/context-optimization-v1.json"
     ))
     .expect("pinned compression manifest should parse");
     let direct_manifest = provider.manifest();

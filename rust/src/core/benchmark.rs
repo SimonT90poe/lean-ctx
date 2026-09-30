@@ -1066,8 +1066,11 @@ mod tests {
     }
 
     #[test]
-    fn run_project_benchmark_on_current_crate() {
-        let bench = run_project_benchmark("src");
+    fn run_project_benchmark_on_multi_language_fixture() {
+        // The shared benchmark_compare fixture exercises the same scan/measure
+        // path in milliseconds; scanning the real `src/` took ~7 s.
+        let root = crate::core::benchmark_compare::tests::fixture_root();
+        let bench = run_project_benchmark(&root.to_string_lossy());
         assert!(bench.files_measured > 0);
         assert!(bench.total_raw_tokens > 0);
         assert!(!bench.languages.is_empty());

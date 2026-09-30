@@ -115,7 +115,13 @@ pub fn should_archive(content: &str) -> bool {
     is_enabled() && content.len() >= threshold_chars()
 }
 
-const MAX_ARCHIVE_SIZE: usize = 10 * 1024 * 1024; // 10 MB
+#[cfg(not(test))]
+pub(crate) const MAX_ARCHIVE_SIZE: usize = 10 * 1024 * 1024; // 10 MB
+/// Same truncation path at a size lib tests can push through the full shell
+/// pipeline: 10 MB of output held the global test env lock for ~50 s. Stays
+/// above the ~290 KB that the large-but-untruncated shell tests produce.
+#[cfg(test)]
+pub(crate) const MAX_ARCHIVE_SIZE: usize = 1024 * 1024;
 const BACKGROUND_RETENTION_HOURS: i64 = 1;
 
 pub fn store(tool: &str, command: &str, content: &str, session_id: Option<&str>) -> Option<String> {

@@ -1,6 +1,10 @@
 fn main() {
     guard_source_contamination();
-    println!("cargo::rerun-if-changed=src/dashboard/dashboard.html");
+    // Watch the whole source tree: the contamination guard must re-run on any
+    // source edit. Never point this at a file that may not exist — a missing
+    // path marks the build script stale on every invocation and recompiles the
+    // whole crate each time (it pointed at a deleted dashboard.html for months).
+    println!("cargo::rerun-if-changed=src");
 }
 
 fn guard_source_contamination() {

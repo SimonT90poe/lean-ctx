@@ -2,28 +2,31 @@
 
 lean-ctx optimizes LLM context by compressing file reads, shell output, and search results.
 
-## Mandatory Multi-Agent Delivery
+## Mandatory Routing Decision (Direct or Swarm)
 
 For every substantive task in this repository, load and follow
-`docs/internal/skills/agent-orchestration.md` before taking task actions.
-Use a coordinated Codex CLI swarm of 2 to 15 agents for the work; do not
-silently fall back to a single-agent workflow. Fifteen agents is a hard
-concurrent maximum; choose the smallest effective swarm and give every agent a
-distinct role.
+`docs/internal/skills/agent-orchestration.md` before taking task actions. The
+**routing decision** is mandatory; a swarm is not. The lead uses 0 to 15
+workers (0 = direct execution) and picks the path with the shortest
+accepted-result time that keeps the full quality bar — the routing gate in the
+skill defines how. Fifteen agents is a hard concurrent maximum; every worker
+gets a distinct role. Security, redaction, public contracts/schemas,
+migrations, releases, and data-loss risk normally get an independent reviewer.
 
 This rule is owned by the orchestration lead. Agents with a concrete delegated
 subtask are swarm workers: they coordinate through lean-ctx and complete their
 assigned role, but do not recursively launch another swarm unless the lead
 explicitly asks them to do so.
 
-- **Runtime:** every Codex CLI agent MUST use `--model gpt-5.6-luna` and
+- **Runtime:** every Codex CLI agent MUST use `--model gpt-6-luna` and
   `-c 'model_reasoning_effort="max"'`.
 - **LeanCTX coordination:** every agent registers on the lean-ctx agent bus,
   checks directives, and uses lean-ctx context tools; the lead records the
   integrated decision and progress through lean-ctx.
-- **Topology:** assign independent, non-duplicative roles. Use a mapper or
-  reviewer alongside the implementer; for non-parallel changes, the reviewer
-  validates the implementer's result after it is ready.
+- **Topology:** assign independent, non-duplicative roles. When a reviewer is
+  used on a non-parallel change, it validates the implementer's result after
+  it is ready — including whether each new test earns its place (see
+  Test Policy).
 - **Safe ownership:** only one agent may edit a given file or shared worktree at
   a time. Parallel agents investigate, test, or review in isolation unless
   explicit file ownership or separate worktrees are assigned.
@@ -164,15 +167,52 @@ LEAN_CTX_DISABLED=1 sed -i '' 's/old/new/g' <file>        # edit without hooks
 - Security: PathJail, Shell Allowlist, bounded_lock, no hardcoded secrets
 - No mock data, no placeholders, no stubs
 
+## Test Policy (single source of truth)
+
+~12 900 tests already exist; every new one costs CI minutes on three OSes
+forever. A test earns its place only if it **catches a plausible future bug
+that nothing else catches** (type system, clippy, existing tests, generators
+with `--check`). Skills and rules reference this section instead of
+prescribing their own test menus.
+
+- **Bugfix:** exactly one regression test, at the lowest layer that
+  reproduces the bug. It must fail without the fix.
+- **Feature / contract change:** test the public behaviour and the contract
+  (inputs → outputs, error paths, security boundaries), not internals.
+- **Extend before adding:** put new cases into the nearest existing test
+  module or table-driven test; do not create a new file or a new
+  `rust/tests/*.rs` binary (each one links the full lib) unless it must mutate
+  process-global state.
+- **Do not write:** serde round-trips of derived types, default-value checks,
+  trivial getters/constructors, tests that restate the implementation,
+  hardcoded counts (tool counts, list lengths) that only change-detect.
+- **Source-text tests** (`include_str!("….rs")` + string matching): no new
+  ones unless no behavioural test is feasible (e.g. a security invariant
+  across files). Existing ones are migrated to behaviour tests when their
+  code is touched.
+- **No test is also a valid answer** for pure refactors covered by existing
+  tests, docs, config or wording changes. Say so in the PR instead of adding
+  a token test.
+- **Never** weaken, skip or delete a failing test to make a change pass.
+  Deleting a test is fine when it is redundant or only change-detects —
+  state why in the commit.
+- **Reviewers** judge test value, not only coverage: "remove this test" is a
+  legitimate review result.
+
 ## Quality Gate
 
-Before every commit, all three checks must pass:
+Before every commit, all checks must pass (run from `rust/`):
 
 ```bash
-cargo test --lib 2>&1 | tail -5       # must show 0 failed
+cargo test --lib > /tmp/lib-tests.log 2>&1; echo "exit=$?"   # judge by exit code, grep the log for FAILED
 cargo clippy --all-features -- -D warnings
+cargo clippy --tests -- -D warnings -A clippy::too_many_lines -A clippy::unwrap_used   # --lib never compiles tests/*.rs
 cargo fmt --check
 ```
+
+Never judge a run by `| tail`: a single red test scrolls past unnoticed.
+Before pushing, `PREFLIGHT_BASE=github/main bash scripts/preflight.sh` runs the
+change-aware fast gate (the pre-push hook runs it too).
 
 ## Output Determinism (#498)
 

@@ -144,8 +144,9 @@ fn conformance_fixtures_match_rust_golden_outputs() {
         "invocation_failure_timeout.json",
         "invocation_failure_policy.json",
     ];
-    let golden: Value = serde_json::from_str(include_str!("fixtures/ocla_conformance_golden.json"))
-        .expect("conformance golden should be valid JSON");
+    let golden: Value =
+        serde_json::from_str(include_str!("../fixtures/ocla_conformance_golden.json"))
+            .expect("conformance golden should be valid JSON");
 
     for name in names {
         let path = conformance_fixture_path(name);

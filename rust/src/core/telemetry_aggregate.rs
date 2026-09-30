@@ -1384,7 +1384,12 @@ fn open_sidecar_lock(path: &std::path::Path) -> Result<std::fs::File, String> {
 
 /// Contention fails without mutating state; failed acknowledgements keep the
 /// frozen batch retryable. This bounds acquisition, not filesystem I/O.
+#[cfg(not(test))]
 const SEND_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(750);
+/// Same bounded path, still several retries: contention tests sit out the full
+/// timeout while holding the global test env lock.
+#[cfg(test)]
+const SEND_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(150);
 const SEND_LOCK_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
 
 /// Shared acquisition for aggregate, one-shot and ledger locks, in that order.

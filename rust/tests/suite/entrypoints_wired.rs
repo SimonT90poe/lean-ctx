@@ -80,6 +80,7 @@ fn lean_ctx() -> Command {
     cmd.env("LEAN_CTX_ACTIVE", "1");
     cmd.env("HOME", "/tmp/lean-ctx-entrypoint-test");
     cmd.env("LEAN_CTX_DISABLED", "1");
+    cmd.env("__LEAN_CTX_NO_DAEMON", "1");
     cmd
 }
 

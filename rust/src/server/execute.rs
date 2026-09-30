@@ -974,11 +974,9 @@ mod tests {
     fn forwards_captured_agent_runtime_env() {
         // #370: the MCP server process lacks CODEX_THREAD_ID; a hook captured it
         // from the agent shell. ctx_shell must still forward it to the child.
-        let _lock = crate::core::data_dir::test_env_lock();
-        let dir = std::env::temp_dir().join("lean_ctx_exec_runtime_env");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        crate::test_env::set_var("LEAN_CTX_DATA_DIR", &dir);
+        // The capture lands in `state_dir()`, so all category dirs must be
+        // isolated — pinning only the data dir let parallel tests race it.
+        let _iso = crate::core::data_dir::isolated_data_dir();
 
         // Simulate a hook capturing the var from the native agent environment.
         crate::test_env::remove_var("CODEX_THREAD_ID");
@@ -988,9 +986,6 @@ mod tests {
         crate::test_env::remove_var("CODEX_THREAD_ID");
 
         let (output, code) = execute_command_in("printf 'TID=%s' \"$CODEX_THREAD_ID\"", ".");
-
-        crate::test_env::remove_var("LEAN_CTX_DATA_DIR");
-        let _ = std::fs::remove_dir_all(&dir);
 
         assert_eq!(code, 0, "command failed: {output}");
         assert!(

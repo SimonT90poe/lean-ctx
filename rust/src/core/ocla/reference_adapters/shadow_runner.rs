@@ -438,7 +438,9 @@ mod tests {
                 workdir: None,
             },
             policy_constraints: PolicyConstraints::default(),
-            timeout_ms: 500,
+            // Production default budget: health check + rewrite + execution under
+            // a fully parallel test run overran 500 ms and dropped the RTK side.
+            timeout_ms: 5_000,
         }
     }
 

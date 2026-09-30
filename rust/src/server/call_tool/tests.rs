@@ -923,7 +923,7 @@ mod shell_outcome_tests {
     #[tokio::test(flavor = "multi_thread")]
     #[cfg(not(windows))]
     async fn oversized_background_archive_reports_truncation_and_exact_sizes() {
-        const ARCHIVE_LIMIT: usize = 10 * 1024 * 1024;
+        const ARCHIVE_LIMIT: usize = crate::core::archive::MAX_ARCHIVE_SIZE;
         const CAPTURED: usize = ARCHIVE_LIMIT + 4096;
         let _data_dir = crate::core::data_dir::isolated_data_dir();
         let _archive = ScopedEnvVar::set("LEAN_CTX_ARCHIVE", "1");
