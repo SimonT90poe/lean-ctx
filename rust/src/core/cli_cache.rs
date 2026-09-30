@@ -87,6 +87,17 @@ fn normalize_key(path: &str) -> String {
     crate::core::pathutil::normalize_tool_path(path)
 }
 
+/// Serializes every load → modify → save of the store within this process.
+/// Without it, two concurrent callers (parallel tool calls in the daemon, or
+/// tests) each load the file, change their own key and write it back — and the
+/// later write silently drops the earlier caller's entry.
+fn store_guard() -> std::sync::MutexGuard<'static, ()> {
+    static STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    STORE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn load_store() -> CliCacheStore {
     let Some(path) = cache_file() else {
         return CliCacheStore::default();
@@ -125,6 +136,7 @@ pub(crate) fn check_and_read(path: &str) -> CacheResult {
     let key = normalize_key(path);
     let hash = compute_md5(&content);
     let now = now_secs();
+    let _guard = store_guard();
     let mut store = load_store();
 
     store.total_reads += 1;
@@ -167,12 +179,14 @@ pub(crate) fn check_and_read(path: &str) -> CacheResult {
 
 pub(crate) fn invalidate(path: &str) {
     let key = normalize_key(path);
+    let _guard = store_guard();
     let mut store = load_store();
     store.entries.remove(&key);
     save_store(&store);
 }
 
 pub(crate) fn clear() -> usize {
+    let _guard = store_guard();
     let mut store = load_store();
     let count = store.entries.len();
     store.entries.clear();
@@ -181,6 +195,7 @@ pub(crate) fn clear() -> usize {
 }
 
 pub(crate) fn clear_project(project_root: &str) -> usize {
+    let _guard = store_guard();
     let mut store = load_store();
     let prefix = normalize_key(project_root);
     let before = store.entries.len();
@@ -406,5 +421,39 @@ mod tests {
 
         crate::test_env::remove_var("LEAN_CTX_DATA_DIR");
         let _ = std::fs::remove_dir_all(&test_data_dir);
+    }
+
+    #[test]
+    fn concurrent_writers_never_drop_each_others_entries() {
+        // Each writer loads the whole store, changes its own key and writes the
+        // file back. Unserialized, a later write dropped entries that a
+        // concurrent writer had just added (flaked ctx_refactor's
+        // `reformat_jetbrains_scope_invalidates_all_changed_paths`).
+        let data = crate::core::data_dir::isolated_data_dir();
+        let files: Vec<String> = (0..64)
+            .map(|i| {
+                let path = data.path().join(format!("f{i}.rs"));
+                std::fs::write(&path, format!("fn f{i}() {{}}\n")).unwrap();
+                path.to_str().unwrap().to_string()
+            })
+            .collect();
+
+        std::thread::scope(|s| {
+            for chunk in files.chunks(8) {
+                s.spawn(move || {
+                    for path in chunk {
+                        let _ = check_and_read(path);
+                    }
+                });
+            }
+        });
+
+        let store = load_store();
+        for path in &files {
+            assert!(
+                store.entries.contains_key(&normalize_key(path)),
+                "entry for {path} was lost to a concurrent write"
+            );
+        }
     }
 }
