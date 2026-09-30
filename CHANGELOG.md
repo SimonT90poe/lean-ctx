@@ -5,6 +5,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Security — PowerShell statements pass the shell allowlist, script blocks are checked (#1930)
+
+- The shell allowlist split multi-line PowerShell into fragments and rejected
+  ordinary statements as mis-splits, so the whole pipeline failed:
+  - `if ($t) { … }` and `try { … } catch { … }`
+  - `$t.Actions`, `$p.WaitForExit()` and `@(Select-String …)`
+  - `[Environment]::GetEnvironmentVariable('Path','User')`
+
+  These statements now pass. The commands inside them are what gets checked:
+  conditions, loop sources, `( … )`, `@( … )` and `$( … )` groups, and the
+  bodies of `{ … }` blocks.
+- Script blocks handed to a cmdlet are validated. Before,
+  `Get-ChildItem | ForEach-Object { Remove-Item $_ }` passed the allowlist
+  and the destructive cmdlet ran unchecked. So did `% { … }`,
+  `Where-Object { … }`, `@{e={ … }}`, `foreach (…) { … }` and a
+  `for (…) { … }` loop after another command.
+- Only read-only .NET members count as inert: `[Environment]`,
+  `[IO.Path]` and `[Math]` reads, `.Trim()`, `.WaitForExit()`, and similar.
+  Writers, process starters and compilers stay blocked:
+  `[IO.File]::WriteAllText`, `[Diagnostics.Process]::Start`,
+  `[scriptblock]::Create`, and calls through `$ExecutionContext`. So does
+  anything else lean-ctx cannot read.
+- Operators, casts and assignments are read as PowerShell only when the
+  command runs under PowerShell. Under bash or zsh, `($y -f 'x')` runs `$y`
+  as a command, and zsh runs `if (…) { … }` natively, so there only single
+  operands (`$t.Actions`, `($t)`, `@(cmd)`) are treated as inert.
+
 ### Fixed — proxy keeps the prompt-cache prefix byte-stable (#1912)
 
 - Effort routing no longer busts the Anthropic cache: the complexity score is
