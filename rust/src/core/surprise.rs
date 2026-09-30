@@ -86,30 +86,57 @@ pub fn classify_surprise(text: &str) -> SurpriseLevel {
     }
 }
 
-/// Enhanced entropy filter that combines Shannon entropy with predictive surprise.
-/// Lines pass if EITHER their entropy is above threshold OR their surprise is high.
-/// This prevents dropping lines that look "low entropy" but contain rare, unique tokens.
-pub fn should_keep_line(trimmed: &str, entropy_threshold: f64) -> bool {
-    if trimmed.is_empty() || trimmed.len() < 3 {
-        return true;
-    }
+/// Threshold at which the entropy filter starts dropping lines (#1910).
+const DROP_SHARE_ORIGIN: f64 = 0.4;
+/// Extra share of lines dropped per unit of threshold above the origin.
+const DROP_SHARE_SLOPE: f64 = 0.4;
+/// Upper bound: even the most aggressive setting keeps most of a file.
+const MAX_DROP_SHARE: f64 = 0.6;
 
-    let tokens = encode_tokens(trimmed);
-    let h = super::entropy::token_entropy_from_ids(&tokens);
-    if h >= entropy_threshold {
-        return true;
-    }
+/// Share of a file's candidate lines the entropy filter drops for a threshold.
+///
+/// Strictly increasing on `(0.4, 1.9)`, which spans every file-adaptive
+/// threshold and the whole aggressiveness range (`0.6 + 1.4a`), so a more
+/// aggressive setting always drops at least as much.
+#[must_use]
+pub fn drop_share(entropy_threshold: f64) -> f64 {
+    ((entropy_threshold - DROP_SHARE_ORIGIN) * DROP_SHARE_SLOPE).clamp(0.0, MAX_DROP_SHARE)
+}
 
-    let h_norm = super::entropy::normalized_token_entropy_from_ids(&tokens);
-    if h_norm >= 0.3 {
-        return true;
+/// Per-file keep floor for [`should_keep_line`] (#1910): the mean per-token
+/// surprise below which a line is among the [`drop_share`] most predictable
+/// lines of `lines`.
+///
+/// The cut is relative to the file on purpose. Absolute cut-offs never fired:
+/// almost every code or prose line has only distinct BPE tokens (normalized
+/// entropy 1.0) and a mean surprise above 11 bits, so a fixed bar either keeps
+/// everything or depends on how the Zipf prior happens to score a language.
+/// Deterministic: the floor is a value from the sorted scores, and ties at it
+/// are kept. Returns `f64::NEG_INFINITY` (keep everything) when nothing is cut.
+#[must_use]
+pub fn surprise_floor<'a>(lines: impl IntoIterator<Item = &'a str>, entropy_threshold: f64) -> f64 {
+    let mut scores: Vec<f64> = lines
+        .into_iter()
+        .map(str::trim)
+        .filter(|t| t.len() >= 3)
+        .map(line_surprise)
+        .collect();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let cut = (scores.len() as f64 * drop_share(entropy_threshold)).floor() as usize;
+    if cut == 0 {
+        return f64::NEG_INFINITY;
     }
+    scores.sort_by(f64::total_cmp);
+    scores[cut.min(scores.len() - 1)]
+}
 
-    // New: check if line has high surprise despite low entropy.
-    // This catches lines like `CustomDomainType::validate()`
-    // which have low token diversity but high surprise per-token.
-    let surprise = line_surprise(trimmed);
-    surprise >= 11.0
+/// Keeps a line unless it is one of the file's most predictable lines, i.e.
+/// its mean per-token surprise is below `surprise_floor` (see
+/// [`surprise_floor`]). Rare identifiers raise the per-token surprise, so a
+/// short line like `CustomDomainType::validate()` survives while boilerplate
+/// built from common tokens is shed first. Lines under 3 bytes always stay.
+pub fn should_keep_line(trimmed: &str, surprise_floor: f64) -> bool {
+    trimmed.len() < 3 || line_surprise(trimmed) >= surprise_floor
 }
 
 // ---------------------------------------------------------------------------
@@ -189,11 +216,11 @@ fn cosine(a: &[f32], b: &[f32]) -> f64 {
 /// byte-for-byte.
 pub fn should_keep_line_semantic(
     trimmed: &str,
-    entropy_threshold: f64,
+    surprise_floor: f64,
     embed: &dyn Fn(&str) -> Option<Vec<f32>>,
     ctx: &mut ScoringCtx,
 ) -> bool {
-    if !should_keep_line(trimmed, entropy_threshold) {
+    if !should_keep_line(trimmed, surprise_floor) {
         return false;
     }
     let Some(emb) = embed(trimmed) else {
@@ -247,10 +274,62 @@ pub mod tests {
     #[test]
     fn should_keep_preserves_rare_lines() {
         let rare = "ZygomorphicValidator::process_xenolith(&mut state)";
-        assert!(
-            should_keep_line(rare, 1.0) || line_surprise(rare) < 11.0,
-            "rare lines should be preserved or have measurable surprise"
-        );
+        let common = [
+            "let a = 1;",
+            "let b = 2;",
+            "x += 1;",
+            "return None;",
+            "Ok(())",
+            "let mut v = Vec::new();",
+            "if x { y }",
+            "self.len()",
+            "use std::fmt;",
+        ];
+        let mut file = common.to_vec();
+        file.push(rare);
+        // 1.9 → drop share 0.6: the six most predictable lines fall below it.
+        let floor = surprise_floor(file.iter().copied(), 1.9);
+        assert!(should_keep_line(rare, floor), "rare line must survive");
+        let shed = common
+            .iter()
+            .filter(|l| !should_keep_line(l, floor))
+            .count();
+        assert!(shed >= 1, "boilerplate is shed first (floor {floor})");
+        assert!(should_keep_line("}", floor), "sub-3-byte lines always stay");
+    }
+
+    /// #1910: the threshold must actually steer the filter — the old absolute
+    /// escapes kept every line whatever the threshold or aggressiveness.
+    #[test]
+    fn drop_share_is_monotonic_and_bounded() {
+        assert_eq!(drop_share(0.0), 0.0);
+        assert_eq!(drop_share(DROP_SHARE_ORIGIN), 0.0);
+        let mut prev = drop_share(0.6);
+        for step in 1..=13 {
+            let t = 0.6 + 0.1 * f64::from(step);
+            let share = drop_share(t);
+            assert!(share > prev, "{t}: {share} must exceed {prev}");
+            prev = share;
+        }
+        assert_eq!(drop_share(10.0), MAX_DROP_SHARE);
+    }
+
+    #[test]
+    fn surprise_floor_cuts_the_requested_share() {
+        let lines: Vec<String> = (0..40)
+            .map(|i| format!("let value_{i} = compute_{}(input);", "x".repeat(i % 7)))
+            .collect();
+        let refs = || lines.iter().map(String::as_str);
+        for t in [0.6, 1.0, 1.4, 1.9] {
+            let floor = surprise_floor(refs(), t);
+            let dropped = refs().filter(|l| !should_keep_line(l, floor)).count();
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let cap = (40.0 * drop_share(t)).floor() as usize;
+            assert!(dropped <= cap, "t={t}: dropped {dropped} > cap {cap}");
+            assert_eq!(floor, surprise_floor(refs(), t), "deterministic (#498)");
+        }
+        assert_eq!(surprise_floor(refs(), 0.4), f64::NEG_INFINITY);
+        assert_eq!(surprise_floor(std::iter::empty(), 1.9), f64::NEG_INFINITY);
     }
 
     /// Deterministic hashed bag-of-words vectorizer: a real (if simple)

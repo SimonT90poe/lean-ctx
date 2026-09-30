@@ -148,15 +148,11 @@ pub fn resolve(ctx: &AutoModeContext) -> ResolvedMode {
     let r = resolve_inner(ctx);
 
     // Quality loop (#494), signal 2: this mode keeps producing edit failures
-    // for this file type — compression here is a proven net loss. Instead of
-    // jumping straight to `full`, try `signatures` first (the next-safest
-    // compressed mode). This preserves ~85% compression when only `map` is risky.
+    // for this file type — compression here is a proven net loss, so serve
+    // `full` (docs/contracts/quality-loop-v1.md). #1911: no `signatures` step
+    // in between — a body-less view is exactly what the failing edits lacked,
+    // and the penalty may only ever escalate toward `full`.
     if r.mode != "full" && crate::core::edit_quality::is_risky_mode(ctx.path, &r.mode) {
-        if r.mode != "signatures"
-            && !crate::core::edit_quality::is_risky_mode(ctx.path, "signatures")
-        {
-            return resolved("signatures", "edit_quality_fallback");
-        }
         return resolved("full", "edit_quality_penalty");
     }
     r
@@ -263,10 +259,10 @@ fn resolve_inner(ctx: &AutoModeContext) -> ResolvedMode {
     // band: measured on this repo (#1914) roughly 0-20% below ~2.5k tokens and
     // 6-67% above. The #361 raw cap keeps `auto` from ever costing more than
     // the raw file, so the small tier degrades to a near-full read, not a loss.
-    if crate::core::cognitive_gate::basic_science_enabled()
-        && is_code(ext)
-        && ctx.token_count > 500
-        && !crate::core::edit_quality::has_any_penalty(ctx.path)
+    // #1911: no edit-penalty skip here — skipping cognitive fell through to a
+    // *lossier* `map`/`signatures`; a risky `cognitive` is escalated to `full`
+    // by the quality-loop check in `resolve` instead.
+    if crate::core::cognitive_gate::basic_science_enabled() && is_code(ext) && ctx.token_count > 500
     {
         if ctx.token_count > 8000 {
             return resolved("cognitive", "science_cognitive_large");

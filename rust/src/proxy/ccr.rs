@@ -147,6 +147,10 @@ fn persist_with(content: &str, prefix: &str) -> Option<String> {
 }
 
 fn persist_with_min(content: &str, prefix: &str, min_bytes: usize) -> Option<String> {
+    debug_assert!(
+        TEE_PREFIXES.contains(&prefix),
+        "tee prefix {prefix} must be resolvable (add it to TEE_PREFIXES)"
+    );
     if content.len() < min_bytes {
         return None;
     }
@@ -192,25 +196,23 @@ fn is_hex(s: &str, len: usize) -> bool {
     s.len() == len && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Canonical `{prefix}_{16hex}.log` name for a proxy / json / tbl / bare-hash id,
-/// or `None`. A bare 16-hex id defaults to the `proxy_` store (back-compat: that
-/// is the only form pre-#936 stubs carry).
+/// Every prefix [`persist_with_min`] writes. The resolver is driven by the same
+/// table, so a new producer can never mint a handle `ctx_expand` rejects
+/// (#1911: `html_` was persisted but unresolvable).
+const TEE_PREFIXES: &[&str] = &["proxy", "conv", "json", "tbl", "yaml", "html"];
+
+/// Canonical `{prefix}_{16hex}.log` name for a prefixed ([`TEE_PREFIXES`]) or
+/// bare-hash id, or `None`. A bare 16-hex id defaults to the `proxy_` store
+/// (back-compat: that is the only form pre-#936 stubs carry).
 fn canonical_tee_name(name: &str) -> Option<String> {
     let stem = name.strip_suffix(".log").unwrap_or(name);
-    if let Some(hash) = stem.strip_prefix("proxy_") {
-        return is_hex(hash, TEE_HASH_LEN).then(|| format!("proxy_{hash}.log"));
-    }
-    if let Some(hash) = stem.strip_prefix("conv_") {
-        return is_hex(hash, TEE_HASH_LEN).then(|| format!("conv_{hash}.log"));
-    }
-    if let Some(hash) = stem.strip_prefix("json_") {
-        return is_hex(hash, TEE_HASH_LEN).then(|| format!("json_{hash}.log"));
-    }
-    if let Some(hash) = stem.strip_prefix("tbl_") {
-        return is_hex(hash, TEE_HASH_LEN).then(|| format!("tbl_{hash}.log"));
-    }
-    if let Some(hash) = stem.strip_prefix("yaml_") {
-        return is_hex(hash, TEE_HASH_LEN).then(|| format!("yaml_{hash}.log"));
+    for prefix in TEE_PREFIXES {
+        if let Some(hash) = stem
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_prefix('_'))
+        {
+            return is_hex(hash, TEE_HASH_LEN).then(|| format!("{prefix}_{hash}.log"));
+        }
     }
     is_hex(stem, TEE_HASH_LEN).then(|| format!("proxy_{stem}.log"))
 }
@@ -239,11 +241,11 @@ fn is_shell_tee_name(name: &str) -> bool {
 /// Accepts every handle form a stub or footer can carry, with a fixed precedence
 /// so the forms can never collide (#936):
 ///
-/// 1. **Prefix forms** — `proxy_<16hex>(.log)`, `conv_<16hex>(.log)`,
-///    `json_<16hex>(.log)`, `tbl_<16hex>(.log)`, `yaml_<16hex>(.log)`, or a bare
-///    `<16hex>` (→ `proxy_`,
-///    back-compat). The proxy history-prune / live stubs and the JSON / tabular /
-///    YAML crushers' lossy originals.
+/// 1. **Prefix forms** — `<prefix>_<16hex>(.log)` for every [`TEE_PREFIXES`]
+///    entry (`proxy_`, `conv_`, `json_`, `tbl_`, `yaml_`, `html_`), or a bare
+///    `<16hex>` (→ `proxy_`, back-compat). The proxy history-prune / live stubs,
+///    the JSON / tabular / YAML crushers' lossy originals and the HTML→markdown
+///    crush's verbatim page (#1124).
 /// 2. **Shell-tee form** — `<slug>_<8hex>.log` (`save_tee`), so every compressed
 ///    shell command's already-teed verbatim output is surgically retrievable.
 ///
@@ -508,6 +510,44 @@ mod tests {
                 "form {form} -> {handle}"
             );
         }
+    }
+
+    /// #1911: the HTML crush's `html_` handle must round-trip through the
+    /// resolver `ctx_expand` uses, in every form the footer can be copied in.
+    #[test]
+    fn persist_html_handle_resolves_in_every_form() {
+        let _lock = crate::core::data_dir::test_env_lock();
+        let content = big("<p>html crush original</p>");
+        let handle = persist_html(&content).expect("html persisted");
+        let hash = crate::core::hasher::hash_short(&content);
+        for form in [
+            handle.clone(),
+            format!("html_{hash}.log"),
+            format!("html_{hash}"),
+        ] {
+            let resolved = resolve_tee(&form).unwrap_or_else(|| panic!("must resolve {form}"));
+            assert_eq!(resolved.to_string_lossy(), handle, "form {form}");
+        }
+        assert!(
+            std::fs::read_to_string(&handle)
+                .unwrap()
+                .contains("html crush original")
+        );
+    }
+
+    /// Every prefix a producer can write is accepted by the resolver, and a
+    /// prefix without its `_` separator is not.
+    #[test]
+    fn canonical_tee_name_covers_every_producer_prefix() {
+        let hash = "0123456789abcdef";
+        for prefix in TEE_PREFIXES {
+            assert_eq!(
+                canonical_tee_name(&format!("{prefix}_{hash}.log")),
+                Some(format!("{prefix}_{hash}.log"))
+            );
+        }
+        assert_eq!(canonical_tee_name(&format!("html{hash}")), None);
+        assert_eq!(canonical_tee_name("html_nothex000000000"), None);
     }
 
     #[test]

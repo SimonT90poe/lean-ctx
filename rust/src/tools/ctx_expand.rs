@@ -482,6 +482,27 @@ mod tests {
         );
     }
 
+    /// #1911: the HTML→markdown crush footer tells the agent to call
+    /// `ctx_expand(id=<html_ handle>, search=…)`; that exact call must slice the
+    /// persisted page instead of reporting "not found or expired".
+    #[test]
+    fn ctx_expand_retrieves_html_crush_original() {
+        let _lock = crate::core::data_dir::test_env_lock();
+        let original = (1..=40)
+            .map(|i| format!("<h2>Section {i}</h2><p>body of section {i}</p>"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let handle_path = crate::proxy::ccr::persist_html(&original).expect("html tee handle");
+        assert!(handle_path.contains("html_"), "html_ prefix: {handle_path}");
+
+        let out = handle(&json!({ "id": handle_path, "search": "Section 7<" }));
+        assert!(
+            out.contains("body of section 7<") && !out.contains("body of section 8<"),
+            "html section recoverable: {out}"
+        );
+        assert!(!out.contains("not found"), "{out}");
+    }
+
     #[test]
     fn ctx_expand_resolves_reference_store_ids() {
         // #498: `ref_`-prefixed IDs route to the in-memory reference store, not

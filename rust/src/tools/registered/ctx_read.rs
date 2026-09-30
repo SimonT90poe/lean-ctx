@@ -46,7 +46,7 @@ impl McpTool for CtxReadTool {
                     "paths": { "type": "array", "items": { "type": "string" }, "description": "Batch read" },
                     "mode": {
                         "type": "string",
-                        "description": "Recommended (defaults to auto). full=verbatim(edit-ready) anchored=full+N:hh|anchors(edit via ctx_patch) raw=exact-bytes signatures=API map=structure auto=smart diff=cache-delta lines:N-M=window -N=tail 5,10-20=multi reference=quotes task=focus"
+                        "description": "Recommended (defaults to auto). full=complete(edit-ready; ≤turn budget, raw=true beyond) anchored=full+N:hh|anchors(edit via ctx_patch) raw=exact-bytes signatures=API map=structure auto=smart diff=cache-delta lines:N-M=window -N=tail 5,10-20=multi reference=quotes task=focus"
                     },
                     "raw": { "type": "boolean", "description": "Verbatim (= mode=raw + fresh)" },
                     "start_line": { "type": "integer", "description": "1-based" },
@@ -791,12 +791,15 @@ impl CtxReadTool {
                                     ReuseOutcome::UnchangedStub,
                                 )
                             } else if crate::tools::ctx_read::is_cacheable_mode(&resolved) {
-                                let ck = crate::tools::ctx_read::compressed_cache_key(
-                                    &resolved,
-                                    crp_mode,
-                                    task_ref,
-                                    tuning.aggressiveness,
-                                    tuning.protect,
+                                let ck = crate::tools::ctx_read::request_scoped_key(
+                                    crate::tools::ctx_read::compressed_cache_key(
+                                        &resolved,
+                                        crp_mode,
+                                        task_ref,
+                                        tuning.aggressiveness,
+                                        tuning.protect,
+                                    ),
+                                    mode == "auto",
                                 );
                                 if let Some(hit) = cache.get_compressed(&path_owned, &ck).cloned() {
                                     crate::core::auto_mode_resolver::count_source(
@@ -978,6 +981,10 @@ impl CtxReadTool {
                             (out, "full".to_string())
                         }
                     } else {
+                        // #1910: a fallback inside an `auto` read returns the
+                        // bare file, bannerless.
+                        let _auto_guard = (mode == "auto")
+                            .then(crate::tools::ctx_read::render::AutoRequestGuard::new);
                         let (out, _) = crate::tools::ctx_read::process_mode_tuned(
                             &compute_content,
                             &resolved_mode,
@@ -1025,12 +1032,15 @@ impl CtxReadTool {
 
                         if let Some(mut cache) = cache_guard {
                             if crate::tools::ctx_read::is_cacheable_mode(&rmode) {
-                                let ck = crate::tools::ctx_read::compressed_cache_key(
-                                    &rmode,
-                                    crp_mode,
-                                    task_ref,
-                                    tuning.aggressiveness,
-                                    tuning.protect,
+                                let ck = crate::tools::ctx_read::request_scoped_key(
+                                    crate::tools::ctx_read::compressed_cache_key(
+                                        &rmode,
+                                        crp_mode,
+                                        task_ref,
+                                        tuning.aggressiveness,
+                                        tuning.protect,
+                                    ),
+                                    mode == "auto",
                                 );
                                 cache.set_compressed(&path_owned, &ck, computed.clone());
                             }

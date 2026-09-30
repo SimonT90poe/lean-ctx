@@ -419,6 +419,9 @@ fn entropy_compress_inner(
     // the size cutoff, which never resolves an engine.
     let embed = line_embedder(if semantic { original_count } else { usize::MAX });
     let mut scoring_ctx = super::surprise::ScoringCtx::new();
+    // #1910: the threshold sets how much of *this* file is shed (most
+    // predictable lines first), so it — and aggressiveness — take effect.
+    let floor = super::surprise::surprise_floor(lines.iter().copied(), entropy_threshold);
     lines.retain(|line| {
         let trimmed = line.trim();
         // Explicit protect tokens (#709) win over every lossy heuristic: a line
@@ -426,15 +429,10 @@ fn entropy_compress_inner(
         if super::protect::line_is_protected(line, force_keep) {
             return true;
         }
-        if super::surprise::should_keep_line_semantic(
-            trimmed,
-            entropy_threshold,
-            &embed,
-            &mut scoring_ctx,
-        ) {
+        if super::surprise::should_keep_line_semantic(trimmed, floor, &embed, &mut scoring_ctx) {
             return true;
         }
-        // Task-conditioned rescue: keep low-entropy lines that mention task keywords.
+        // Task-conditioned rescue: keep predictable lines that mention task keywords.
         if !kw_lower.is_empty() {
             let lower = trimmed.to_lowercase();
             if kw_lower.iter().any(|kw| lower.contains(kw.as_str())) {
@@ -446,7 +444,7 @@ fn entropy_compress_inner(
     });
     let removed = original_count - lines.len();
     if removed > 0 || task_rescued > 0 {
-        let mut msg = format!("⊘ {removed} low-entropy lines (BPE H<{entropy_threshold:.2})");
+        let mut msg = format!("⊘ {removed} predictable lines");
         if task_rescued > 0 {
             msg.push_str(&format!(" [+{task_rescued} task-rescued]"));
         }
