@@ -44,6 +44,10 @@ pub(crate) struct McpWiring {
     pub sha256: String,
     /// Typed-integration adapter slug (L4), or empty for a passthrough server.
     pub integration: String,
+    /// `auth = "oauth"`: the server needs a browser login (#1391).
+    pub oauth: bool,
+    /// `scopes = [...]` requested at login; empty = what the server advertises.
+    pub oauth_scopes: Vec<String>,
 }
 
 impl McpWiring {
@@ -58,6 +62,7 @@ impl McpWiring {
                     format!("{} {}", self.command, self.args.join(" "))
                 }
             }
+            TransportKind::Http if self.oauth => format!("{} (OAuth browser login)", self.url),
             TransportKind::Http => self.url.clone(),
         }
     }
@@ -78,6 +83,8 @@ impl McpWiring {
             binary_sha256: self.sha256.clone(),
             url: self.url.clone(),
             headers: self.headers.clone(),
+            oauth: self.oauth,
+            oauth_scopes: self.oauth_scopes.clone(),
             integration: self.integration.clone(),
             ..GatewayServer::default()
         }
@@ -240,6 +247,22 @@ pub(crate) fn parse(text: &str) -> Result<AddonManifest, String> {
                 _ => {}
             }
 
+            let oauth = match string_at(t, "auth").as_str() {
+                "" | "none" => false,
+                "oauth" if transport == TransportKind::Http => true,
+                "oauth" => {
+                    return Err(
+                        "lean-ctx-addon.toml: [mcp] auth = \"oauth\" requires transport = \"http\""
+                            .into(),
+                    );
+                }
+                other => {
+                    return Err(format!(
+                        "lean-ctx-addon.toml: [mcp] unknown auth `{other}` (none | oauth)"
+                    ));
+                }
+            };
+
             Some(McpWiring {
                 transport,
                 command,
@@ -249,6 +272,8 @@ pub(crate) fn parse(text: &str) -> Result<AddonManifest, String> {
                 headers: string_map(t, "headers"),
                 sha256: string_at(t, "sha256"),
                 integration: resolve_integration(addon_table, t)?,
+                oauth,
+                oauth_scopes: string_list(t, "scopes"),
             })
         }
     };

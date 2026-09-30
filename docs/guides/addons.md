@@ -144,6 +144,31 @@ credentials in `secret_env` / `secret_headers`, which a manifest cannot carry by
 design, and the per-server `enabled` switch, so an addon you deliberately turned
 off does not come back on behind an upgrade.
 
+An `http` server that only accepts a browser login declares it:
+
+```toml
+[mcp]
+transport = "http"
+url = "https://api.example.com/mcp"
+auth = "oauth"
+scopes = ["mcp:read"]   # optional
+```
+
+Run `lean-ctx addon auth <name>` once. lean-ctx discovers the server's OAuth
+endpoints, registers itself as a public client, opens the login page (PKCE,
+redirect to a one-shot listener on `127.0.0.1`) and stores the result. From
+then on the gateway attaches the token and refreshes it when it expires. The
+command also works for a server whose manifest does not declare `auth` — a
+successful login marks the entry. `--status` shows whether you are logged in,
+`--logout` deletes the credentials, `--no-browser` only prints the URL.
+
+The credentials are encrypted (XChaCha20-Poly1305, bound to the server URL) in
+`<data_dir>/mcp-oauth/`. The key lives in the macOS Keychain or the Windows
+Credential Manager; on Linux it is a `0600` file next to the credentials, so
+there it protects against copying the credential files alone, not against a
+process running as you. `addon remove` deletes the credentials, and an upgrade
+keeps a login you completed.
+
 When `sha256` is set, the gateway resolves `command` against the `PATH` the
 child will see, hashes it, and refuses to spawn on a mismatch. An unset pin is
 a documented no-op, not a silent pass.

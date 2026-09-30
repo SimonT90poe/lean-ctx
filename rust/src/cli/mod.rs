@@ -1,3 +1,5 @@
+#[cfg(feature = "http-server")]
+mod addon_auth;
 mod addon_cmd;
 mod addon_deps;
 mod agent_cmd;

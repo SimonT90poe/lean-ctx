@@ -181,6 +181,9 @@ rmcp = { version = "2", features = [
   "transport-streamable-http-server",
   "transport-child-process",
   "transport-streamable-http-client-reqwest",
+  # OAuth 2.1 for HTTP MCP servers that require a browser login (#1391):
+  # discovery, dynamic client registration, PKCE, code exchange, refresh.
+  "auth",
 ] }
 # Header types for the gateway's downstream HTTP MCP client (already in the tree via rmcp/reqwest).
 http = "1.4"
@@ -466,6 +469,8 @@ windows-sys = { version = "0.61", features = [
   "Wdk_Storage_FileSystem",
   "Win32_System_IO",
 ] }
+# See the macOS keyring entry below (#1391).
+keyring = { version = "3.6", default-features = false, features = ["windows-native"] }
 
 [target.'cfg(all(not(windows), not(target_env = "musl")))'.dependencies]
 # jemalloc's bundled C build requires atomics that are not consistently exposed
@@ -473,6 +478,12 @@ windows-sys = { version = "0.61", features = [
 # allocator; glibc and macOS releases retain jemalloc.
 tikv-jemallocator = { version = "0.7", optional = true }
 tikv-jemalloc-ctl = { version = "0.7", optional = true }
+
+# OS keychain for the key that encrypts stored MCP OAuth credentials (#1391).
+# Only the platforms with a native, always-present keychain: elsewhere keyring
+# would fall back to a volatile mock store, so those use a 0600 key file.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6", default-features = false, features = ["apple-native"] }
 
 [dev-dependencies]
 leanctx-verify = { path = "../packages/leanctx-verify" }
@@ -500,6 +511,8 @@ harness = false
 # rmcp 2.0.0 keeps completed response-send tasks in a JoinSet until shutdown,
 # which grows RSS for long-lived MCP sessions. Keep this vendored patch until
 # modelcontextprotocol/rust-sdk ships the continuous drain fix.
+# Also patched: OAuth discovery ignores a 200 status page on the MCP endpoint
+# instead of reading it as resource metadata (#1391, transport/auth.rs).
 [patch.crates-io]
 rmcp = { path = "crates/vendor/rmcp" }
 rmcp-macros = { path = "crates/vendor/rmcp-macros" }

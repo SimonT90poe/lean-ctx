@@ -105,6 +105,14 @@ pub struct GatewayServer {
     /// HTTP header names mapped to secret memento references.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub secret_headers: BTreeMap<String, SecretMementoRef>,
+    /// The server requires a browser OAuth login (#1391). Its token comes from
+    /// `lean-ctx addon auth <name>`, is stored encrypted, and is refreshed
+    /// automatically; it never appears in this config.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub oauth: bool,
+    /// Scopes to request at login. Empty = what the server advertises.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub oauth_scopes: Vec<String>,
 
     /// Typed-integration adapter override (#1096, L4). Empty = *auto*: derive the
     /// adapter from the owning addon's category in the installed store. An
@@ -129,6 +137,8 @@ impl Default for GatewayServer {
             url: String::new(),
             headers: BTreeMap::new(),
             secret_headers: BTreeMap::new(),
+            oauth: false,
+            oauth_scopes: Vec::new(),
             integration: String::new(),
         }
     }
@@ -148,6 +158,8 @@ pub enum ResolvedTransport {
         url: String,
         headers: BTreeMap<String, String>,
         secret_fingerprints: BTreeMap<String, String>,
+        /// Attach the stored browser-OAuth token (#1391).
+        oauth: bool,
     },
 }
 
@@ -170,6 +182,7 @@ impl fmt::Debug for ResolvedTransport {
                 url,
                 headers,
                 secret_fingerprints,
+                oauth,
             } => formatter
                 .debug_struct("Http")
                 .field("url", url)
@@ -178,6 +191,7 @@ impl fmt::Debug for ResolvedTransport {
                     "secret_fields",
                     &secret_fingerprints.keys().collect::<Vec<_>>(),
                 )
+                .field("oauth", oauth)
                 .finish(),
         }
     }
@@ -276,10 +290,23 @@ impl GatewayServer {
                     secret_fingerprints.insert(name.clone(), fingerprint);
                 }
 
+                if self.oauth
+                    && headers
+                        .keys()
+                        .any(|name| name.eq_ignore_ascii_case("authorization"))
+                {
+                    return Err(format!(
+                        "gateway server `{}` uses OAuth but also sets an `Authorization` \
+                         header; remove one of them",
+                        self.name
+                    ));
+                }
+
                 Ok(ResolvedTransport::Http {
                     url: url.to_string(),
                     headers,
                     secret_fingerprints,
+                    oauth: self.oauth,
                 })
             }
         }
@@ -637,6 +664,7 @@ secret_headers = { Authorization = { id = "mcp/gitlab/toml", format = "Bearer {s
                 ("Authorization".into(), "private-value".into()),
             ]),
             secret_fingerprints: BTreeMap::from([("authorization".into(), "abc123".into())]),
+            oauth: false,
         };
 
         let debug = format!("{transport:?}");
