@@ -259,7 +259,10 @@ fn resolve_inner(ctx: &AutoModeContext) -> ResolvedMode {
     // Science-driven mode selection: when cognitive science features are enabled,
     // use semantic chunking (cognitive mode) instead of structural-only modes.
     // Cognitive mode returns 7±2 task-relevant code chunks with bodies — more
-    // useful than signatures-only and still 44-68% savings on medium files.
+    // useful than signatures-only. Savings are file-dependent, not a fixed
+    // band: measured on this repo (#1914) roughly 0-20% below ~2.5k tokens and
+    // 6-67% above. The #361 raw cap keeps `auto` from ever costing more than
+    // the raw file, so the small tier degrades to a near-full read, not a loss.
     if crate::core::cognitive_gate::basic_science_enabled()
         && is_code(ext)
         && ctx.token_count > 500

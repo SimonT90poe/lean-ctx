@@ -123,22 +123,15 @@ impl TranslationConfig {
 }
 
 /// Layout (attention-aware reorder) configuration.
+///
+/// Reserved: no read path reorders content, so these keys are accepted for
+/// profile compatibility but have no effect (#1915,
+/// docs/contracts/attention-layout-driver-v1.md).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct LayoutConfig {
-    /// If false, preserve original order.
     pub enabled: Option<bool>,
-    /// Minimum line count for enabling reorder.
     pub min_lines: Option<usize>,
-}
-
-impl LayoutConfig {
-    pub fn enabled_effective(&self) -> bool {
-        self.enabled.unwrap_or(false)
-    }
-    pub fn min_lines_effective(&self) -> usize {
-        self.min_lines.unwrap_or(15)
-    }
 }
 
 /// Routing policy overrides (intent → model tier → read mode/budgets).

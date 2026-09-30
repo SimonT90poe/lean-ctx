@@ -2,7 +2,6 @@
 // Domain: Compression
 // ---------------------------------------------------------------------------
 pub(crate) mod aggressiveness;
-pub mod attention_context;
 pub(crate) mod auto_capture;
 pub(crate) mod auto_findings;
 pub(crate) mod behavior_nudge;
@@ -43,7 +42,6 @@ pub mod output_sanitizer;
 #[allow(dead_code)]
 pub mod policy;
 pub mod pop_pruning;
-pub mod predictive_coding;
 pub mod preservation;
 pub mod pro_triggers;
 pub mod process_guard;
@@ -98,7 +96,6 @@ pub(crate) mod prospective_memory;
 // ---------------------------------------------------------------------------
 pub mod call_graph;
 pub mod community;
-pub mod gamma_cover;
 pub(crate) mod graph_analysis;
 pub mod graph_context;
 pub(crate) mod graph_coordinator;
@@ -177,7 +174,6 @@ pub(crate) mod pgvector_store;
 pub(crate) mod qdrant_store;
 pub mod search_reranking;
 pub mod semantic_cache;
-pub mod semantic_chunks;
 pub(crate) mod splade_retrieval;
 pub mod spreading_activation;
 
@@ -195,9 +191,6 @@ pub(crate) mod skillify;
 // ---------------------------------------------------------------------------
 // Domain: Attention & Placement
 // ---------------------------------------------------------------------------
-pub mod attention_layout_driver;
-pub mod attention_model;
-pub mod attention_placement;
 pub mod litm;
 
 // ---------------------------------------------------------------------------
@@ -363,7 +356,6 @@ pub mod home;
 pub mod homeostasis;
 pub(crate) mod immune_detector;
 pub mod live_evidence_ledger;
-pub mod marginal_gate;
 pub mod mcp_catalog;
 pub mod metering;
 pub mod nudge;
@@ -417,7 +409,6 @@ pub(crate) mod llm_feedback;
 pub(crate) mod logging;
 pub mod mcp_manifest;
 pub mod mdl_mode;
-pub mod mdl_selector;
 pub mod multi_repo;
 pub(crate) mod nc_compress;
 pub mod ocp;

@@ -1292,3 +1292,38 @@ fn minified_payloads_stay_out_of_the_index() {
         index.files.keys().collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn persisted_chunk_count_reads_the_length_prefix_without_loading() {
+    let _data = crate::core::data_dir::isolated_data_dir();
+    let td = tempdir().expect("tempdir");
+    let root = td.path();
+    assert_eq!(
+        BM25Index::persisted_chunk_count(root),
+        None,
+        "nothing saved yet"
+    );
+
+    BM25Index::default().save(root).expect("save empty index");
+    assert_eq!(
+        BM25Index::persisted_chunk_count(root),
+        Some(0),
+        "an empty index must report zero chunks, not look ready"
+    );
+
+    let mut body = String::new();
+    for i in 0..200 {
+        body.push_str(&format!("pub fn f{i}() -> u32 {{ {i} }}\n\n"));
+    }
+    std::fs::write(root.join("many.rs"), body).expect("write");
+    let index = BM25Index::build_from_directory(root);
+    assert!(
+        index.chunks.len() > 127,
+        "fixture must need a multi-byte varint"
+    );
+    index.save(root).expect("save");
+    assert_eq!(
+        BM25Index::persisted_chunk_count(root),
+        Some(index.chunks.len() as u64)
+    );
+}

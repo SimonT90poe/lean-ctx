@@ -687,8 +687,8 @@ Parameters: `max_items`, `max_tokens`, `mode`, `query`, `timeout_secs`, `url`*
 ## `ctx_verify`
 
 Verification observability — tool call statistics and claim-based verification.
-WORKFLOW: action=stats to monitor tool usage; action=proof|v2 for Lean4 proof verification.
-Actions: stats|proof|v2 (format=summary|json|both, default summary).
+WORKFLOW: action=stats to monitor tool usage; action=proof|v2 for a ContextProofV2 of runtime-checked policy claims (PathJail per touched file, budget).
+Actions: stats (format=summary|json|both, default summary) | proof|v2 (format=summary|json, default json).
 ANTIPATTERN: not for runtime verification during active development — use for periodic audit.
 
 Parameters: `action`, `format`

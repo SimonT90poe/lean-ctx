@@ -132,6 +132,38 @@ fn auto_read_never_inflates_small_file() {
 }
 
 #[test]
+fn cognitive_read_never_inflates_small_tier_file() {
+    // #1914: `auto` routes 500-2000-token code to `cognitive`, whose raw
+    // output can exceed the file (attention placement re-orders and frames
+    // chunks). The raw cap must hold in that tier.
+    let _iso = crate::core::data_dir::isolated_data_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mid.rs");
+    let p = path.to_string_lossy().to_string();
+    let mut content = String::new();
+    for i in 0..40 {
+        content.push_str(&format!(
+            "pub fn step_{i}(input: &[u8]) -> usize {{\n    input.iter().filter(|b| **b > {i}).count()\n}}\n\n"
+        ));
+    }
+    std::fs::write(&path, &content).unwrap();
+    let raw_tokens = count_tokens(&content);
+    assert!(
+        (500..=2000).contains(&raw_tokens),
+        "fixture tier: {raw_tokens}"
+    );
+
+    let mut cache = SessionCache::new();
+    let out = handle_with_task_resolved(&mut cache, &p, "cognitive", CrpMode::Off, None);
+    assert!(
+        out.output_tokens <= raw_tokens,
+        "cognitive read inflated a small-tier file: {} > {raw_tokens}\n{}",
+        out.output_tokens,
+        out.content
+    );
+}
+
+#[test]
 fn full_read_never_inflates_tiny_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("tiny.rs");

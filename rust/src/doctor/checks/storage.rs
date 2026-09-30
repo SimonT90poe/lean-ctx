@@ -241,9 +241,14 @@ fn bm25_index_outcome(project_root: &str) -> Outcome {
     let summary = crate::core::index_orchestrator::bm25_summary(project_root);
     let disk = crate::core::index_orchestrator::disk_status(project_root);
     let persisted = if disk.bm25_index.exists {
+        let chunks = disk
+            .bm25_index
+            .file_count
+            .map(|n| format!(", {n} chunks"))
+            .unwrap_or_default();
         match disk.bm25_index.size_bytes {
-            Some(b) => format!("persisted {:.1} MB", b as f64 / 1_048_576.0),
-            None => "persisted".to_string(),
+            Some(b) => format!("persisted {:.1} MB{chunks}", b as f64 / 1_048_576.0),
+            None => format!("persisted{chunks}"),
         }
     } else {
         "not persisted".to_string()
@@ -283,6 +288,14 @@ fn bm25_index_outcome(project_root: &str) -> Outcome {
                 ),
             }
         }
+        // #1914: a persisted index with zero chunks answers every search with
+        // nothing, so it must not read as ready.
+        _ if disk.bm25_index.exists && disk.bm25_index.file_count == Some(0) => Outcome {
+            ok: true,
+            line: format!(
+                "{BOLD}BM25 index{RST}  {YELLOW}empty{RST} {DIM}(0 chunks on disk — run: lean-ctx index build){RST}"
+            ),
+        },
         "ready" => Outcome {
             ok: true,
             line: format!(
