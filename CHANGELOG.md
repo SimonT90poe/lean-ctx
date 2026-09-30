@@ -5,6 +5,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — browser OAuth login for HTTP MCP servers (#1391)
+
+- `lean-ctx addon auth <name>` logs in to an HTTP MCP server that requires
+  OAuth 2.1 (discovery, dynamic client registration, PKCE, loopback
+  redirect). The gateway then attaches the token and refreshes it.
+  `--status`, `--logout` and `--no-browser` are available.
+- Addon manifests declare it with `[mcp] auth = "oauth"` and optional
+  `scopes`. `auth` on a `stdio` server, or together with an `Authorization`
+  header, is refused.
+- Credentials are encrypted per server. The key is in the macOS Keychain or
+  the Windows Credential Manager; on Linux it is a `0600` key file.
+  `addon remove` deletes the credentials; an upgrade keeps the login.
+- The vendored rmcp no longer mistakes a `200` status page on the MCP
+  endpoint for OAuth resource metadata, which made discovery fail for
+  servers such as TwinMind before the well-known path was tried.
+
 ### Security — PowerShell statements pass the shell allowlist, script blocks are checked (#1930)
 
 - The shell allowlist split multi-line PowerShell into fragments and rejected

@@ -23,7 +23,7 @@ from a field that is silently ignored.
   and `categories` where they feed the adapter choice below. The remaining
   metadata fields parse without error and are not used.
 - `[mcp]` — `transport`, `command`, `args`, `env`, `url`, `headers`, `sha256`,
-  `integration`. Translated directly into a `[[gateway.servers]]` entry.
+  `integration`, `auth`, `scopes`. Translated directly into a `[[gateway.servers]]` entry.
   Half-configured wiring (stdio without `command`, http without `url`, a
   non-`http(s)` URL, an unknown transport, an unrecognised `integration`) is
   refused at parse.
@@ -96,6 +96,8 @@ Mirrors a `[[gateway.servers]]` entry — installation is a direct translation.
 | `sha256` | string | `""` | stdio | Optional SHA-256 pin of the `command` binary (the value `shasum -a 256` prints). When set, the gateway hashes the resolved binary before spawn and refuses a mismatch (fail-closed). Empty = unpinned. |
 | `url` | string | `""` | http | Streamable-HTTP endpoint (must be `http(s)://`). |
 | `headers` | table | `{}` | http | Extra request headers (e.g. auth). |
+| `auth` | `none` \| `oauth` | `none` | http | `oauth`: the server needs a browser login (OAuth 2.1, PKCE, dynamic client registration). The user runs `lean-ctx addon auth <name>` once; the gateway then attaches the token and refreshes it. Refused for `stdio` and when `headers` also sets `Authorization`. |
+| `scopes` | string[] | `[]` | http | OAuth scopes to request; empty = the server's default. |
 
 ### `[capabilities]` (optional, additive in v1)
 

@@ -66,8 +66,9 @@ fn pool_identity(transport: &ResolvedTransport) -> String {
             url,
             headers,
             secret_fingerprints,
+            oauth,
         } => format!(
-            "http|url={url:?}|headers={:?}|secrets={:?}",
+            "http|url={url:?}|headers={:?}|secrets={:?}|oauth={oauth}",
             public_values_case_insensitive(headers, secret_fingerprints),
             normalized_secret_fingerprints(secret_fingerprints)
         ),
@@ -195,6 +196,7 @@ mod tests {
             url: "https://gitlab.example/mcp".into(),
             headers: headers.clone(),
             secret_fingerprints: secrets.clone(),
+            oauth: false,
         };
         assert!(!pool_identity(&first).contains("raw-token-one"));
         headers.insert("Authorization".into(), "Bearer raw-token-two".into());
@@ -202,6 +204,7 @@ mod tests {
             url: "https://gitlab.example/mcp".into(),
             headers,
             secret_fingerprints: secrets.clone(),
+            oauth: false,
         };
         assert_eq!(key(&first), key(&same_fingerprint));
         secrets.insert("Authorization".into(), "fp-two".into());
@@ -209,6 +212,7 @@ mod tests {
             url: "https://gitlab.example/mcp".into(),
             headers: BTreeMap::from([("Authorization".into(), "Bearer raw-token-two".into())]),
             secret_fingerprints: secrets,
+            oauth: false,
         };
         assert_ne!(key(&first), key(&rotated));
     }
@@ -219,11 +223,13 @@ mod tests {
             url: "https://example.com/mcp".into(),
             headers: BTreeMap::from([("Authorization".into(), "private-token".into())]),
             secret_fingerprints: BTreeMap::from([("Authorization".into(), "fingerprint".into())]),
+            oauth: false,
         };
         let lower_fingerprint = ResolvedTransport::Http {
             url: "https://example.com/mcp".into(),
             headers: BTreeMap::from([("Authorization".into(), "private-token".into())]),
             secret_fingerprints: BTreeMap::from([("authorization".into(), "fingerprint".into())]),
+            oauth: false,
         };
 
         assert!(!pool_identity(&lower_fingerprint).contains("private-token"));

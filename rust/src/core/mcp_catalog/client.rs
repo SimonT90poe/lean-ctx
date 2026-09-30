@@ -63,10 +63,14 @@ pub async fn open(
                 url,
                 headers,
                 secret_fingerprints,
+                oauth,
             } => {
                 let mut cfg = StreamableHttpClientTransportConfig::with_uri(url.clone());
                 if !headers.is_empty() {
                     cfg = cfg.custom_headers(http_headers(headers, secret_fingerprints)?);
+                }
+                if *oauth {
+                    return open_oauth(url, cfg).await;
                 }
                 let t = StreamableHttpClientTransport::from_config(cfg);
                 ().serve(t)
@@ -78,6 +82,42 @@ pub async fn open(
     tokio::time::timeout(timeout, connect)
         .await
         .map_err(|_| "downstream connect timed out".to_string())?
+}
+
+/// Open an HTTP session that carries the stored browser-OAuth token (#1391).
+/// The token is attached per request and refreshed when it expires.
+#[cfg(feature = "http-server")]
+async fn open_oauth(
+    url: &str,
+    cfg: StreamableHttpClientTransportConfig,
+) -> Result<ClientService, String> {
+    let client = super::oauth::authorized_client(url, &server_label(url)).await?;
+    let t = StreamableHttpClientTransport::with_client(client, cfg);
+    ().serve(t)
+        .await
+        .map_err(|e| format!("MCP handshake failed (http, OAuth): {e}"))
+}
+
+#[cfg(not(feature = "http-server"))]
+async fn open_oauth(
+    url: &str,
+    _cfg: StreamableHttpClientTransportConfig,
+) -> Result<ClientService, String> {
+    Err(format!(
+        "{url} needs OAuth, which this lean-ctx build omits (built without `http-server`)"
+    ))
+}
+
+/// The configured name of the gateway server at `url`, for messages that tell
+/// the user which `lean-ctx addon auth <name>` to run.
+#[cfg(feature = "http-server")]
+fn server_label(url: &str) -> String {
+    crate::core::config::Config::load()
+        .gateway
+        .servers
+        .into_iter()
+        .find(|s| s.url.trim() == url)
+        .map_or_else(|| "<name>".to_string(), |s| s.name)
 }
 
 fn http_headers(

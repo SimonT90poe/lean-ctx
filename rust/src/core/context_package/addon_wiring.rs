@@ -67,6 +67,12 @@ pub(crate) fn register(manifest: &AddonManifest) -> Result<Wired, String> {
         server.secret_env = prev.secret_env.clone();
         server.secret_headers = prev.secret_headers.clone();
         server.enabled = prev.enabled;
+        // A browser login the user completed (`addon auth`, #1391) is theirs:
+        // an upgrade whose manifest does not declare `auth` must not drop it.
+        server.oauth |= prev.oauth;
+        if server.oauth_scopes.is_empty() {
+            server.oauth_scopes.clone_from(&prev.oauth_scopes);
+        }
     }
 
     cfg.gateway.servers.retain(|s| s.name != name);
@@ -87,12 +93,18 @@ pub(crate) fn register(manifest: &AddonManifest) -> Result<Wired, String> {
 /// is gone.
 pub(crate) fn unregister(name: &str) -> Result<bool, String> {
     let mut cfg = Config::load();
-    let before = cfg.gateway.servers.len();
-    cfg.gateway.servers.retain(|s| s.name != name);
-    if cfg.gateway.servers.len() == before {
+    let Some(removed) = cfg.gateway.servers.iter().find(|s| s.name == name).cloned() else {
         return Ok(false);
-    }
+    };
+    cfg.gateway.servers.retain(|s| s.name != name);
     cfg.save().map_err(|e| format!("save config: {e}"))?;
+    // Tokens for a server the user removed must not linger on disk (#1391).
+    #[cfg(feature = "http-server")]
+    if removed.oauth {
+        crate::core::mcp_catalog::oauth::forget(&removed.url)?;
+    }
+    #[cfg(not(feature = "http-server"))]
+    let _ = removed;
     Ok(true)
 }
 

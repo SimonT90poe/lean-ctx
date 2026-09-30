@@ -245,22 +245,30 @@ fn histogram_edges_are_bounded_and_deterministic() {
 #[test]
 #[serial_test::serial]
 fn send_lease_blocks_purge_until_send_finishes() {
+    // Judged on outcomes, not on how fast a thread is scheduled: the earlier
+    // threaded version failed on a loaded macOS runner when purge had already
+    // hit its bounded lock timeout before the test started its 50 ms window.
     let _iso = crate::core::data_dir::isolated_data_dir();
     let lease = begin_daily_send().expect("begin send");
-    let (tx, rx) = std::sync::mpsc::channel();
-    let worker = std::thread::spawn(move || {
-        tx.send(purge_local_state()).expect("report purge");
-    });
+    let state = state_path().expect("state path");
     assert!(
-        rx.recv_timeout(std::time::Duration::from_millis(50))
-            .is_err(),
-        "purge must wait for in-flight send lease"
+        state.exists(),
+        "the send lease persists the aggregate state"
     );
+
+    let error = purge_local_state().expect_err("purge must not run during an in-flight send");
+    assert!(
+        error.contains("timed out"),
+        "unexpected purge error: {error}"
+    );
+    assert!(
+        state.exists(),
+        "a refused purge must leave the state intact"
+    );
+
     drop(lease);
-    rx.recv_timeout(std::time::Duration::from_secs(2))
-        .expect("purge completed")
-        .expect("purge succeeded");
-    worker.join().expect("purge worker");
+    purge_local_state().expect("purge succeeds once the send finished");
+    assert!(!state.exists(), "purge removes the aggregate state");
 }
 
 /// Two fixed buckets and the clock values that name them. Admission and day

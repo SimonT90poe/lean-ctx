@@ -1,6 +1,7 @@
 //! `lean-ctx addon` — the extension surface.
 //!
-//! Five verbs, deliberately: `list`, `info`, `add`, `remove`, `release`.
+//! Five verbs, deliberately: `list`, `info`, `add`, `remove`, `release` —
+//! plus `auth`, the browser login an OAuth-protected HTTP server needs (#1391).
 //!
 //! There is no `search`. Search implies an index someone curates, and that is
 //! a marketplace — explicitly out of scope. An addon arrives as a file or from
@@ -34,6 +35,13 @@ pub(crate) fn cmd_addon(args: &[String]) {
         Some("add" | "install") => cmd_add(args),
         Some("remove" | "rm" | "uninstall") => cmd_remove(args),
         Some("release") => cmd_release(args),
+        #[cfg(feature = "http-server")]
+        Some("auth" | "login") => super::addon_auth::cmd_auth(args),
+        #[cfg(not(feature = "http-server"))]
+        Some("auth" | "login") => {
+            eprintln!("lean-ctx addon auth: this build omits OAuth (built without `http-server`)");
+            std::process::exit(1);
+        }
         Some("help") => print_usage(),
         Some(other) => {
             eprintln!("lean-ctx addon: unknown subcommand '{other}'");
@@ -52,6 +60,8 @@ fn print_usage() {
   add <pkg | ns/name>     Verify, show, ask, then install (file or registry ref)
   remove <name>           Remove an addon, its modules and its gateway entry
   release <dir>           Build a signed .ctxpkg from a directory
+  auth <name>             Browser OAuth login for an HTTP MCP server
+                          (--status, --logout, --no-browser)
 
 An addon directory holds `lean-ctx-addon.toml` and, for a WASM addon, one or
 more `.wasm` modules. `release` embeds the modules in the package and signs it,
@@ -64,6 +74,11 @@ returns can affect lean-ctx.
 A manifest may instead declare an MCP server under `[mcp]`. That server is an
 ordinary process with your privileges — not sandboxed — so `add` prints the
 exact command before asking, and lean-ctx never installs the binary for you.
+
+An HTTP server that requires a browser login declares `auth = \"oauth\"` under
+`[mcp]` (optional `scopes = [...]`); run `lean-ctx addon auth <name>` once.
+The credentials are stored encrypted, the key in the OS keychain where there
+is one, and the token is refreshed automatically.
 
 Docs: docs/guides/addons.md · contracts: wasm-abi-v1, addon-manifest-v1"
     );
