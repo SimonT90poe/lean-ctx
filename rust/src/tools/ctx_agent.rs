@@ -20,6 +20,32 @@ fn scratchpad_default_ttl_hours() -> u64 {
         .scratchpad_default_ttl_hours
 }
 
+/// Every action [`handle`] dispatches, one entry each. The MCP schema's
+/// `action` enum and the unknown-action reply are both built from this list.
+pub(crate) const ACTIONS: &[&str] = &[
+    "register",
+    "list",
+    "post",
+    "read",
+    "status",
+    "info",
+    "handoff",
+    "sync",
+    "claim",
+    "release",
+    "brief",
+    "return",
+    "export",
+    "diary",
+    "recall_diary",
+    "diaries",
+    "share_knowledge",
+    "receive_knowledge",
+    "poll_events",
+    "lease_acquire",
+    "lease_release",
+];
+
 #[allow(clippy::too_many_arguments)]
 pub fn handle(
     action: &str,
@@ -881,7 +907,7 @@ pub fn handle(
                 owner_agent_id: agent_id.to_string(),
                 duration_ms,
             };
-            match crate::core::agent_lease::acquire_local(request) {
+            match crate::core::agent_lease::acquire_shared(request) {
                 Ok(crate::core::agent_lease::AgentLeaseAcquireV1::Granted(lease)) => format!(
                     "Lease granted: {} resource={} owner={} expires_at_epoch_ms={}",
                     lease.lease_ref, resource_ref, agent_id, lease.expires_at_epoch_ms
@@ -909,7 +935,7 @@ pub fn handle(
                 return "Error: category (lease_ref from lease_acquire) is required".to_string();
             };
             let (resource_kind, resource_ref) = lease_resource(target);
-            match crate::core::agent_lease::release_local(
+            match crate::core::agent_lease::release_shared(
                 resource_kind,
                 &resource_ref,
                 agent_id,
@@ -921,9 +947,7 @@ pub fn handle(
             }
         }
 
-        _ => format!(
-            "Unknown action: {action}. Use: register, list, post, read, status, info, handoff, sync, poll_events, diary, recall_diary, diaries, share_knowledge, receive_knowledge, lease_acquire, lease_release"
-        ),
+        _ => format!("Unknown action: {action}. Use: {}", ACTIONS.join(", ")),
     }
 }
 

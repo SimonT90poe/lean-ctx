@@ -109,9 +109,14 @@ pub fn compare(
     }
 }
 
+/// #1905: the baseline is simulated from the same task and outcome signals as
+/// the treatment, so the acceptance comparison cannot show a quality change.
+pub const BASELINE_NOTE: &str = "Note: the baseline is simulated (uncompressed token counts, same outcome signals), not a second measured run. Cost and token deltas are estimates; the acceptance line is not a measured quality comparison.";
+
 pub fn format_report(report: &ShadowReport) -> String {
     let recommendations = if report.recommendations.is_empty() {
-        "- No recommendation: treatment did not reduce cost while maintaining quality.".into()
+        "- No recommendation: treatment did not reduce cost without lowering outcome acceptance."
+            .into()
     } else {
         report
             .recommendations
@@ -127,7 +132,7 @@ pub fn format_report(report: &ShadowReport) -> String {
     };
 
     format!(
-        "# Shadow Comparison Report\n\n| Metric | Baseline | Treatment | Delta |\n|---|---:|---:|---:|\n| Cost (micros) | {} | {} | {} |\n| Tokens | {} | {} | {} |\n| Avg CPAO (micros) | {} | {} | {} |\n| Avg latency (ms) | {} | {} | {} |\n\nCost savings: {} micros ({:.2}%). Token savings: {}. Quality maintained: {}.\n\n## Recommendations\n{}",
+        "# Shadow Comparison Report\n\n| Metric | Baseline | Treatment | Delta |\n|---|---:|---:|---:|\n| Cost (micros) | {} | {} | {} |\n| Tokens | {} | {} | {} |\n| Avg CPAO (micros) | {} | {} | {} |\n| Avg latency (ms) | {} | {} | {} |\n\nCost savings: {} micros ({:.2}%). Token savings: {}. Outcome acceptance not below baseline: {}.\n\n{BASELINE_NOTE}\n\n## Recommendations\n{}",
         report.baseline.total_cost_micros,
         report.treatment.total_cost_micros,
         format_delta(report.delta.cost_micros, "saved", "more"),
@@ -190,7 +195,7 @@ fn recommendations(
         results.push(Recommendation {
             category: "Context compression".into(),
             description: format!(
-                "Keep context compression: it removed {} tokens while maintaining quality.",
+                "Keep context compression: it removed an estimated {} tokens against the simulated baseline.",
                 savings.tokens_saved
             ),
             estimated_savings_micros: savings.absolute_micros,
@@ -203,7 +208,7 @@ fn recommendations(
         results.push(Recommendation {
             category: "Model routing".into(),
             description: format!(
-                "Route comparable tasks from {} to {}; this lowered cost by {:.2}% while maintaining quality.",
+                "Route comparable tasks from {} to {}; this lowered estimated cost by {:.2}% against the simulated baseline.",
                 baseline_models.join(", "),
                 treatment_models.join(", "),
                 percentage_savings(baseline_cost_micros, baseline_cost_micros - savings.absolute_micros),

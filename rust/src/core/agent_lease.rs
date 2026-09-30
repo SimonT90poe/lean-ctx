@@ -3,9 +3,14 @@
 //! Gives callers an idempotent path/symbol ownership primitive. Does not perform
 //! a mutation, resolve a path, or authorize an agent; policy and transport bind
 //! it later. Uses caller-provided time for deterministic expiry boundaries.
+//!
+//! `acquire_shared`/`release_shared` persist the registry in
+//! `<data_dir>/agents/leases.json` under an exclusive file lock, so every
+//! lean-ctx process on the machine (each agent's MCP server, the daemon, the
+//! CLI) sees the same holders (#1913).
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -164,13 +169,15 @@ impl AgentLeaseRegistryV1 {
     }
 }
 
-// ─── Global Process-Local Registry ──────────────────────────────────────────
+// ─── Machine-Wide Shared Registry ───────────────────────────────────────────
 
-static GLOBAL_REGISTRY: std::sync::OnceLock<Mutex<AgentLeaseRegistryV1>> =
-    std::sync::OnceLock::new();
-
-fn global_registry() -> &'static Mutex<AgentLeaseRegistryV1> {
-    GLOBAL_REGISTRY.get_or_init(|| Mutex::new(AgentLeaseRegistryV1::default()))
+/// On-disk form of the registry. A list rather than a map: the registry key is
+/// a `(kind, ref)` tuple, which JSON objects cannot key on.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgentLeaseFileV1 {
+    schema_version: u16,
+    leases: Vec<AgentLeaseV1>,
 }
 
 fn now_epoch_ms() -> u64 {
@@ -180,29 +187,91 @@ fn now_epoch_ms() -> u64 {
         .as_millis() as u64
 }
 
-pub fn acquire_local(request: AgentLeaseRequestV1) -> Result<AgentLeaseAcquireV1, AgentLeaseError> {
-    let mut reg = global_registry()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    reg.acquire(request, now_epoch_ms())
+fn shared_dir() -> Result<PathBuf, AgentLeaseError> {
+    crate::core::data_dir::lean_ctx_data_dir()
+        .map(|dir| dir.join("agents"))
+        .map_err(AgentLeaseError::Store)
 }
 
-pub fn release_local(
+fn load_registry(path: &Path) -> Result<AgentLeaseRegistryV1, AgentLeaseError> {
+    let mut registry = AgentLeaseRegistryV1::default();
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(registry),
+        Err(error) => {
+            return Err(AgentLeaseError::Store(format!(
+                "read {}: {error}",
+                path.display()
+            )));
+        }
+    };
+    // A corrupt file fails closed: treating it as empty would hand out
+    // resources another agent still holds.
+    let file: AgentLeaseFileV1 = serde_json::from_str(&content).map_err(|error| {
+        AgentLeaseError::Store(format!(
+            "lease store is corrupt at {}: {error}",
+            path.display()
+        ))
+    })?;
+    if file.schema_version != AGENT_LEASE_SCHEMA_VERSION {
+        return Err(AgentLeaseError::UnsupportedVersion(file.schema_version));
+    }
+    for lease in file.leases {
+        let key = (
+            lease.request.resource_kind,
+            lease.request.resource_ref.clone(),
+        );
+        registry.leases.insert(key, lease);
+    }
+    Ok(registry)
+}
+
+fn save_registry(path: &Path, registry: &AgentLeaseRegistryV1) -> Result<(), AgentLeaseError> {
+    let file = AgentLeaseFileV1 {
+        schema_version: AGENT_LEASE_SCHEMA_VERSION,
+        leases: registry.leases.values().cloned().collect(),
+    };
+    let json = serde_json::to_string_pretty(&file)
+        .map_err(|error| AgentLeaseError::Serialize(error.to_string()))?;
+    crate::config_io::write_atomic(path, &json)
+        .map_err(|error| AgentLeaseError::Store(format!("persist {}: {error}", path.display())))
+}
+
+/// Runs `mutate` against the shared registry while holding the store lock, so
+/// a read-check-write from one process can never interleave with another's.
+fn with_shared_registry<T>(
+    mutate: impl FnOnce(&mut AgentLeaseRegistryV1, u64) -> Result<T, AgentLeaseError>,
+) -> Result<T, AgentLeaseError> {
+    let dir = shared_dir()?;
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        AgentLeaseError::Store(format!("create lease directory {}: {error}", dir.display()))
+    })?;
+    let _lock = crate::core::agents::FileLock::acquire(&dir.join("leases.lock"))
+        .map_err(AgentLeaseError::Store)?;
+    let path = dir.join("leases.json");
+    let mut registry = load_registry(&path)?;
+    let result = mutate(&mut registry, now_epoch_ms())?;
+    save_registry(&path, &registry)?;
+    Ok(result)
+}
+
+/// Acquires a lease visible to every lean-ctx process that shares the data dir.
+pub fn acquire_shared(
+    request: AgentLeaseRequestV1,
+) -> Result<AgentLeaseAcquireV1, AgentLeaseError> {
+    with_shared_registry(|registry, now| registry.acquire(request, now))
+}
+
+/// Releases a lease from the machine-wide registry.
+pub fn release_shared(
     resource_kind: AgentLeaseResourceKindV1,
     resource_ref: &str,
     owner_agent_id: &str,
     lease_ref: &str,
 ) -> Result<bool, AgentLeaseError> {
-    let mut reg = global_registry()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    reg.release(
-        resource_kind,
-        resource_ref,
-        owner_agent_id,
-        lease_ref,
-        now_epoch_ms(),
-    )
+    with_shared_registry(|registry, now| {
+        registry.release(resource_kind, resource_ref, owner_agent_id, lease_ref, now)
+    })
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -252,6 +321,8 @@ pub enum AgentLeaseError {
     NotOwner,
     #[error("serialization failed: {0}")]
     Serialize(String),
+    #[error("lease store: {0}")]
+    Store(String),
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -342,5 +413,60 @@ pub mod tests {
             reg.acquire(second, 1),
             Err(AgentLeaseError::CapacityExceeded(1))
         ));
+    }
+
+    fn long_request(owner: &str, ref_id: &str) -> AgentLeaseRequestV1 {
+        AgentLeaseRequestV1 {
+            duration_ms: 60_000,
+            ..request(owner, ref_id)
+        }
+    }
+
+    /// The shared registry keeps no in-memory state: every call reloads the
+    /// store under its lock, which is exactly what a second process sees.
+    #[test]
+    fn shared_registry_is_visible_across_calls_and_persisted() {
+        let iso = crate::core::data_dir::isolated_data_dir();
+        let AgentLeaseAcquireV1::Granted(granted) =
+            acquire_shared(long_request("agent-a", "request:a")).unwrap()
+        else {
+            panic!("expected grant")
+        };
+        let store = iso.path().join("agents").join("leases.json");
+        assert!(store.exists(), "lease store is written to the data dir");
+        assert!(matches!(
+            acquire_shared(long_request("agent-b", "request:b")),
+            Ok(AgentLeaseAcquireV1::HeldBy { owner_agent_id, .. }) if owner_agent_id == "agent-a"
+        ));
+        assert!(
+            release_shared(
+                AgentLeaseResourceKindV1::Path,
+                "pathref:src-core-main",
+                "agent-a",
+                &granted.lease_ref,
+            )
+            .unwrap()
+        );
+        assert!(matches!(
+            acquire_shared(long_request("agent-b", "request:b")),
+            Ok(AgentLeaseAcquireV1::Granted(_))
+        ));
+    }
+
+    #[test]
+    fn corrupt_shared_store_fails_closed() {
+        let iso = crate::core::data_dir::isolated_data_dir();
+        let dir = iso.path().join("agents");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("leases.json"), "{not json").unwrap();
+        assert!(matches!(
+            acquire_shared(long_request("agent-a", "request:a")),
+            Err(AgentLeaseError::Store(message)) if message.contains("corrupt")
+        ));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("leases.json")).unwrap(),
+            "{not json",
+            "a corrupt store is never overwritten"
+        );
     }
 }

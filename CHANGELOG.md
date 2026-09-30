@@ -5,6 +5,122 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — proxy keeps the prompt-cache prefix byte-stable (#1912)
+
+- Effort routing no longer busts the Anthropic cache: the complexity score is
+  session-stable, so the injected `thinking` block stays identical across
+  turns. The thinking budget is capped at half of `max_tokens`, so requests
+  with `max_tokens` below 2048 get no injection. A client-set OpenAI
+  `reasoning_effort` is never overridden.
+- When a guard reverts the compression, or nothing changed, the proxy forwards
+  the client's original bytes instead of a re-serialized body. gzip/zstd
+  bodies are re-encoded correctly after a rewrite.
+- Compressing the system prompt of a warm (client-cached) conversation is now
+  priced: it only happens when the per-turn cache-read saving repays the
+  one-off cache re-write within the conversation's observed length. Once a
+  conversation is compressed, it stays compressed, so the prefix never flips.
+- Model prices come from the current pricing table (Opus 4.5: $5/M input)
+  instead of a stale hard-coded list.
+- Docs: removed the unmeasured "~5-15% extra savings" claim; OpenAI caching
+  discounts are now described as "up to 90% on GPT-5-family".
+
+### Fixed — quality claims match what the gates can show (#1905)
+
+- `lean-ctx eval ab` reports now print `POWER: underpowered` when a run has
+  fewer than 30 paired tasks, so a small replay reads as a pipeline check, not
+  as evidence that compression keeps answer quality.
+- Shadow reports say the baseline is simulated from the same outcome signals.
+  "Quality maintained" became "Outcome acceptance not below baseline", and
+  recommendations no longer claim quality was kept. The evidence export uses
+  the same wording.
+- The profile `constraints` docs state that `quality_floor` and
+  `max_context_tokens` are offline-only (benchmark and calibrate) and that the
+  other constraint fields are not read yet.
+- README: the CI testbench and A/B replays are described as mechanism gates,
+  and Shadow Mode as a simulated baseline. The archived E-Bench v2 report now
+  names the model its result files record (gpt-5.6-terra, not GPT-4.1).
+- Still open in #1905: a powered with/without study and a real holdout arm
+  for compression.
+
+### Added — `lean-ctx pack --limit`: one bundle that fits a chat box (#1885)
+
+- `lean-ctx pack [path] --limit 128k` writes one self-contained XML document
+  (`<bundle>` with `<task>`, `<summary>`, `<directory_structure>`, optional
+  `<knowledge>`, `<files>`) for pasting into a web chat or piping to an agent.
+  The limit is a hard cap on the whole document, measured in characters
+  (default, what chat inputs count) or `o200k_base` tokens (`--unit tokens`);
+  `128000`, `128k` and `2M` are accepted.
+- Files are ranked by the task (`--intent "…"`, default: the session task)
+  and the import graph (personalized PageRank from the matching files), with
+  intent-specific boosts (review: changed files; explore: README/manifests).
+  The best files go in full, the next tier as signatures, the rest appear
+  only in the tree, which collapses to directory counts when it gets too big.
+- Selection honours `.gitignore`/`.ignore`, skips lockfiles, minified files,
+  binaries and files over 512 KiB, and takes `--include`/`--ignore` globs.
+  Files with detected secrets and secret-like paths (`.env`, keys) are
+  withheld and listed in the summary; `--no-security-check` needs `--force`.
+- `--emit plain` prints only the allocation report (which file, which view,
+  why), `--emit both` sends the report to stderr and the XML to stdout.
+  `-o <file>`, `--copy` (clipboard) and `--stats` (`files= chars= tokens=`)
+  are supported. Output is deterministic. Exit `1` when even the frame does
+  not fit the limit (the output is still written), `2` on bad flags.
+- `--with-knowledge[=decision,architecture,…]` appends current, public,
+  curated project facts (`--with-auto` adds machine-derived ones,
+  `--knowledge-limit` caps the count). Unlike the proposal, knowledge counts
+  toward the limit so the paste never overflows.
+- MCP: `ctx_pack action=bundle` with the same options (`path`, `limit`,
+  `unit`, `intent`, `emit`, `include`, `ignore`, `with_knowledge`, `file`);
+  the secret check is always on there.
+- Not yet: `--compress`, `--truncate`, `--strip-comments`, `--trim-base64`,
+  `--show-line-numbers`.
+
+### Removed — 24 core modules that no code path used (#1923)
+
+- These `lean_ctx::core` modules had no caller in the binary, the tests, the
+  benches, the other workspace crates or `lean-ctx-sdk`; they were compiled
+  and shipped, but never ran:
+  - `adaptive_chunking`, `cognitive_load`, `graph_features`,
+    `progressive_compression`, `structural_diff`, `structural_tokenizer` —
+    listed as added "Context Runtime research modules" in an earlier release;
+    no read, search or compression path ever called them.
+  - `adaptive_compression`, `agent_attribution`, `cache_diagnostics`,
+    `chain_compression`, `content_handle`, `cross_customer_learning`,
+    `delta_response`, `evidence_classification`, `evidence_flow`,
+    `execution_ledger`, `fleet_analytics`, `json_sample`,
+    `negative_knowledge`, `query_aware`, `rule_scorer`, `session_budget`,
+    `token_calibration`, `work_graph`.
+- About 12,500 lines less to build and maintain. No CLI command, MCP tool,
+  config key or contract changes. Rust embedders that imported one of these
+  paths directly must drop the import; `crate::engine::ContextEngine` and
+  `lean-ctx-sdk` are the supported embedding surfaces.
+- `rust/LOCK_ORDERING.md` drops lock L88 (`HANDLES`), which lived in the
+  removed `content_handle`.
+- Still open in #1923: six modules only tests reference
+  (`predictive_prefetch`, `multiscale_index`, `context_column`, `ocp`,
+  `solution_rules`, `solution_types`).
+
+### Fixed — the agent surface advertises only what actually works (#1913)
+
+- `/.well-known/agent.json` and `/.well-known/mcp-server.json` list only tools
+  that are callable through `tools/list` and `/v1/tools`, and a test holds the
+  three in sync. The agent card's authentication schemes now match what `/a2a`
+  enforces.
+- `/a2a` no longer takes the sender from `message.role`, so `"role":"user"` is
+  never recorded as an agent id. `message/send` is supported, and
+  `tasks/cancel` is refused for a task the caller does not own.
+- `ctx_agent` leases live in `<data_dir>/agents/leases.json` under a file lock.
+  A second lean-ctx process gets `Lease HELD` for a path another agent holds.
+  Before, each MCP server had its own in-memory table. A corrupt lease store
+  fails closed instead of handing out held resources.
+- The `ctx_agent` action enum had a merged
+  `receive_knowledge|lease_acquire|lease_release` entry and was missing
+  `export` and `poll_events`. The enum now comes from the dispatcher's action
+  list, and the schema documents `ttl_hours`.
+- Removed `OclaBus` and its event schema. It was never enabled, so every emit
+  was a no-op that production could not observe.
+- The self-pilot evidence reports its 43 agents as registered identities, not
+  as agent-bus coordination.
+
 ### Fixed — Windows: a timed-out or cancelled command no longer leaves processes behind (#1920)
 
 - On Windows, `ctx_shell`, `ctx_execute` and the sandbox only ended the shell
@@ -71,6 +187,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   it locally or remotely.
 - Fixed: tool calls were never counted in production, so every usage
   aggregate reported zero.
+
+### Fixed — parallel first reads no longer fail with "cache lock contention"
+
+- The first `ctx_read` of a session built the tokenizer while it held the
+  global cache lock. That takes seconds on a cold start. Every other read that
+  started at the same moment, for example a subagent reading a set of files in
+  parallel, waited behind it. Past the 10-second deadline those reads failed
+  with "cache lock contention for … — retry in a moment". The tokenizer and the
+  path-protection config are now loaded before the lock is taken, so the lock
+  is held for under a millisecond.
+- A read that still cannot get the lock in time returns the file without
+  caching it. Before, the read failed. The same applies to a cache hit: it is
+  delivered even when its bookkeeping cannot get the lock.
+- Every tenth tool call ran the Pro usage scan, which reads every saved
+  session from disk. The scan ran on the server's async workers and held the
+  session lock the whole time. With a long session history, all tool calls
+  running in parallel stalled behind it. The scan now works on a copy of the
+  two fields it needs, runs in the background, and never runs twice at once.
 
 ### Fixed — files in legacy Windows encodings are indexed
 

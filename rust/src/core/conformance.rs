@@ -136,7 +136,7 @@ const A2A_CARD_REQUIRED: &[&str] = &[
 fn a2a_checks() -> Vec<Check> {
     let mut checks = Vec::new();
 
-    let card = crate::core::a2a::agent_card::build_agent_card("conformance");
+    let card = crate::core::a2a::agent_card::build_agent_card("conformance", true);
     let missing: Vec<&&str> = A2A_CARD_REQUIRED
         .iter()
         .filter(|f| card.get(**f).is_none())
@@ -151,7 +151,7 @@ fn a2a_checks() -> Vec<Check> {
     checks.push(Check::from_bool(
         "a2a",
         "agent_card_deterministic",
-        card == crate::core::a2a::agent_card::build_agent_card("conformance"),
+        card == crate::core::a2a::agent_card::build_agent_card("conformance", true),
         "two agent card builds differ",
     ));
 

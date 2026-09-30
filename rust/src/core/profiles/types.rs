@@ -263,19 +263,24 @@ impl BudgetConfig {
     }
 }
 
-/// Hard requirements for a profile's output and resource use.
+/// Targets for a profile's output and resource use.
+///
+/// Offline only: `quality_floor` feeds the benchmark spec and `max_context_tokens`
+/// caps `lean-ctx calibrate`. No live read/shell/proxy path enforces any of these,
+/// and `max_cost_usd`, `max_latency_ms` and `require_verification` are read by
+/// nothing yet (#1905).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ConstraintsConfig {
-    /// Minimum quality score, from 0.0 to 1.0.
+    /// Minimum benchmark quality score, from 0.0 to 1.0 (offline benchmark gate).
     pub quality_floor: Option<f64>,
-    /// Maximum cost per task in USD.
+    /// Maximum cost per task in USD. Not enforced.
     pub max_cost_usd: Option<f64>,
-    /// Maximum latency per operation in milliseconds.
+    /// Maximum latency per operation in milliseconds. Not enforced.
     pub max_latency_ms: Option<u64>,
-    /// Hard context limit, overriding the budget when lower.
+    /// Context limit applied by `lean-ctx calibrate` when lower than the budget.
     pub max_context_tokens: Option<usize>,
-    /// Require output verification before accepting a result.
+    /// Require output verification before accepting a result. Not enforced.
     pub require_verification: Option<bool>,
 }
 

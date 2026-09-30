@@ -1,7 +1,7 @@
 //! BuiltinModelRouter — intent-aware model routing via OCLA trait.
 //!
 //! Wraps `proxy/model_router.rs` and `proxy/effort_routing.rs` behind the
-//! canonical trait. Emits ModelRouted events. Routes to the best candidate
+//! canonical trait. Routes to the best candidate
 //! model within the cost/latency constraints.
 
 use crate::core::config::{Config, Effort, RoutingRules, parse_route_target};
@@ -10,7 +10,6 @@ use crate::core::ocla::types::{
     IntentDecision, ModelRouteRequest, OclaCapability, OclaCapabilityKind, OclaError, OclaResult,
     RoutingDecision,
 };
-use crate::core::ocla_bus::{self, OclaEvent};
 use crate::core::savings_ledger::store::{self, MechanismSummary};
 use serde::Deserialize;
 use serde_json::json;
@@ -151,11 +150,6 @@ impl ModelRouter for BuiltinModelRouter {
     async fn route_model(&self, request: ModelRouteRequest) -> OclaResult<RoutingDecision> {
         let result = self.route_model_with_intent(&request, None)?;
         if let Err(reason) = self.pep.enforce(&result.decision, &request) {
-            ocla_bus::emit(OclaEvent::AgentChainEvent {
-                agent_id: request.context.agent_id.clone(),
-                action: format!("model_route_denied: {reason}"),
-                parent_agent: None,
-            });
             return Err(OclaError::InvalidRequest(format!(
                 "routing policy denied: {reason}"
             )));
@@ -187,13 +181,12 @@ impl BuiltinModelRouter {
             .and_then(|decision| route_for_intent(&requested_model, decision, &self.rules))
             .or_else(|| crate::proxy::model_router::route(&body, &self.rules));
         let ledger = routing_ledger_summary();
-        let (model, provider, tier, model_changed) = routed.map_or_else(
+        let (model, provider, tier) = routed.map_or_else(
             || {
                 (
                     requested_model.clone(),
                     infer_provider(&requested_model),
                     "standard".to_string(),
-                    false,
                 )
             },
             |decision| {
@@ -201,17 +194,9 @@ impl BuiltinModelRouter {
                 let provider = decision
                     .routed_provider
                     .unwrap_or_else(|| infer_provider(&model));
-                let changed = decision.model_changed;
-                (model, provider, decision.tier, changed)
+                (model, provider, decision.tier)
             },
         );
-
-        ocla_bus::emit(OclaEvent::ModelRouted {
-            requested_model: requested_model.clone(),
-            routed_model: model.clone(),
-            tier: tier.clone(),
-            model_changed,
-        });
 
         let routing_rationale = routing_rationale(intent, tier.as_str(), ledger.as_ref());
         Ok(RoutingDecisionWithRationale {

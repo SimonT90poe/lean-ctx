@@ -18,7 +18,6 @@ use crate::core::ocla::types::{
     CompressionRequest, CompressionResult, OCLA_API_VERSION, OclaCapability, OclaCapabilityKind,
     OclaCapabilityStatus, OclaResult,
 };
-use crate::core::ocla_bus::{self, OclaEvent};
 use crate::core::tokens;
 
 const COMPRESSION_MANIFEST_JSON: &str = include_str!(concat!(
@@ -129,13 +128,6 @@ impl BuiltinCompressionProvider {
         }
 
         let ref_key = port.persist(compressed.as_bytes())?;
-
-        ocla_bus::emit(OclaEvent::CompressionApplied {
-            path: Some(request.source_ref.clone()),
-            before_tokens: request.source_tokens,
-            after_tokens: delivered_tokens,
-            strategy: "aggressive_compress".to_string(),
-        });
 
         Ok(CompressionResult {
             delivered_ref: ref_key,

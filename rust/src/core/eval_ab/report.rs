@@ -17,6 +17,10 @@ pub const REPORT_SCHEMA_VERSION: u32 = 1;
 /// Equality tolerance when classifying a task as win/tie/loss.
 const EPS: f64 = 1e-9;
 
+/// Below this many paired tasks a bootstrap CI says nothing about quality: a
+/// passing verdict only shows the pipeline ran end to end (#1905).
+pub const MIN_POWERED_PAIRS: usize = 30;
+
 /// One task scored under both conditions, with the audit digests for each window + answer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PairRecord {
@@ -185,6 +189,13 @@ impl AbReport {
             s.wins, s.ties, s.losses
         ));
         out.push_str(&format!("VERDICT: {}\n", self.verdict.label()));
+        if s.n < MIN_POWERED_PAIRS {
+            out.push_str(&format!(
+                "POWER:   underpowered — {} paired task(s) < {MIN_POWERED_PAIRS}; this run checks \
+                 the pipeline, it cannot show that compression keeps answer quality\n",
+                s.n
+            ));
+        }
         out
     }
 }
@@ -372,6 +383,25 @@ mod tests {
         assert_eq!(report.verdict, Verdict::NonInferior);
         assert_eq!(report.stats.ties, 2);
         assert!(report.verdict.gate_passes());
+    }
+
+    #[test]
+    fn small_suite_is_labelled_underpowered() {
+        let small = vec![rec("1", 0.7, 0.7), rec("2", 0.4, 0.4)];
+        let report = AbReport::build("s", 4000, fp(), small, ReportConfig::default());
+        assert!(
+            report
+                .render()
+                .contains("POWER:   underpowered — 2 paired task(s) < 30"),
+            "{}",
+            report.render()
+        );
+
+        let large: Vec<_> = (0..MIN_POWERED_PAIRS)
+            .map(|i| rec(&i.to_string(), 0.5, 0.5))
+            .collect();
+        let report = AbReport::build("s", 4000, fp(), large, ReportConfig::default());
+        assert!(!report.render().contains("underpowered"));
     }
 
     #[test]

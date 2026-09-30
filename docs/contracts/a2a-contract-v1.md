@@ -146,7 +146,10 @@ Alle neuen Felder sind `#[serde(default)]` für backward compatibility.
 ## Google A2A Kompatibilität (Phase 3)
 
 - **Agent Card v1.0**: Publiziert unter `/.well-known/agent.json` mit `provider`, `documentationUrl`, `skills` mit `inputModes/outputModes`.
-- **JSON-RPC 2.0**: `tasks/send`, `tasks/get`, `tasks/cancel` gemapped auf interne TaskStore.
+- **JSON-RPC 2.0**: `message/send` (Legacy-Name `tasks/send`), `tasks/get`, `tasks/cancel` gemapped auf interne TaskStore.
+  - Absender jedes über `/a2a` erzeugten Tasks ist die feste Identität `a2a-client` — der Endpoint kennt nur einen Principal (Bearer-Token). `message.role` ist nur die A2A-Rolle (`user` | `agent`), andere Werte → `-32602`.
+  - Folge-Nachrichten (`message.taskId` bzw. `params.id`) und `tasks/cancel` gelten nur für Tasks, die über `/a2a` erzeugt wurden; lokale `ctx_task`-Tasks sind darüber nicht veränderbar.
+  - Message-Parts: Diskriminator `kind` (A2A 0.2+) oder `type` (0.1).
 - **Runtime**: `rust/src/core/a2a/a2a_compat.rs`
 
 ## Security & Privacy

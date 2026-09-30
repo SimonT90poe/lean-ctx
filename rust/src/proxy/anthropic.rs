@@ -271,41 +271,76 @@ pub(super) fn compress_request_body(
     // normally, or 0 when we are intentionally repacking the cold prefix.
     let protect = if repack { 0 } else { cached };
 
-    // System prose: only when nothing is client-cached and the `system` field
-    // carries no `cache_control` of its own — otherwise it anchors the cache.
-    // A cold-prefix repack (`protect == 0` with `repack`) deliberately rewrites
-    // it to re-seed a leaner cache.
-    let model_name = doc
-        .get("model")
-        .and_then(Value::as_str)
-        .unwrap_or("default")
-        .to_owned();
+    // System prose: compressed freely when nothing is client-cached, or when a
+    // cold-prefix repack deliberately rewrites it to re-seed a leaner cache.
+    // With a warm cached prefix the system block is part of that prefix, so
+    // mutating it busts the cache: only the cache-economics gate may approve
+    // that, priced on the whole prefix, and a per-conversation latch then keeps
+    // every later turn on the compressed prefix (#1912). A `cache_control` on
+    // `system` itself always anchors it (unless repacking).
+    let warm_gate = if system_aggr.is_some()
+        && !repack
+        && cached > 0
+        && cache_economics
+        && doc
+            .get("system")
+            .is_some_and(|s| !prose::value_has_cache_control(s))
+    {
+        let messages = doc
+            .get("messages")
+            .and_then(Value::as_array)
+            .map_or(&[][..], Vec::as_slice);
+        super::cold_prefix::conversation_key(messages).map(|key| {
+            (
+                key,
+                super::cache_policy::prefix_tokens(doc.get("system"), messages, cached),
+                super::cache_policy::observed_prefix_reuse(messages),
+                doc.get("model")
+                    .and_then(Value::as_str)
+                    .unwrap_or("default")
+                    .to_owned(),
+            )
+        })
+    } else {
+        None
+    };
     if let Some(a) = system_aggr
-        && protect == 0
         && let Some(system) = doc.get_mut("system")
         && (repack || !prose::value_has_cache_control(system))
     {
-        let should_compress = if repack || cached == 0 {
-            true
-        } else {
-            let sys_tokens = prose::estimate_tokens(system) as u64;
-            let estimated_after = (sys_tokens as f64 * (1.0 - a)).max(0.0) as u64;
-            let reuse_rate = super::cache_attribution::estimated_reuse_rate();
-            let model_cost = super::cache_policy::model_cost_for(&model_name);
-            let gate = super::cache_policy::should_mutate_frozen(
-                sys_tokens,
-                estimated_after,
-                reuse_rate,
-                &model_cost,
-            );
-            matches!(gate, super::cache_policy::MutationDecision::Mutate { .. })
-        };
-        if should_compress {
-            let n = prose::compress_system_value(system, a);
-            if n > 0 {
-                prose_segments += u64::from(n);
-                modified = true;
+        let segments = if repack || cached == 0 {
+            prose::compress_system_value(system, a)
+        } else if let Some((key, prefix_before, reuse, model_name)) = warm_gate {
+            let mut candidate = system.clone();
+            let n = prose::compress_system_value(&mut candidate, a);
+            let latched = super::cold_prefix::system_compression_latched(key);
+            let approve = n > 0
+                && (latched
+                    || matches!(
+                        super::cache_policy::system_mutation_decision(
+                            prefix_before,
+                            system,
+                            &candidate,
+                            reuse,
+                            &super::cache_policy::model_cost_for(&model_name),
+                        ),
+                        super::cache_policy::MutationDecision::Mutate { .. }
+                    ));
+            if approve {
+                if !latched {
+                    super::cold_prefix::latch_system_compression(key);
+                }
+                *system = candidate;
+                n
+            } else {
+                0
             }
+        } else {
+            0
+        };
+        if segments > 0 {
+            prose_segments += u64::from(segments);
+            modified = true;
         }
     }
 

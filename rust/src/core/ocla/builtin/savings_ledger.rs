@@ -1,7 +1,7 @@
 //! BuiltinSavingsLedger — records compression savings with evidence refs.
 //!
-//! Wraps `core/savings_ledger/` behind the OCLA trait. Emits SavingsRecorded
-//! events to OclaBus. Evidence references are content-addressed (blake3 of
+//! Wraps `core/savings_ledger/` behind the OCLA trait. Evidence references
+//! are content-addressed (blake3 of
 //! the evidence payload), ensuring deterministic, replay-safe identifiers.
 
 use std::sync::Mutex;
@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::core::ocla::traits::{OclaService, SavingsLedger};
 use crate::core::ocla::types::{OclaCapability, OclaCapabilityKind, OclaResult, SavingsEvidence};
-use crate::core::ocla_bus::{self, OclaEvent, SavingsSource};
 
 const MAX_EVIDENCE_ENTRIES: usize = 4096;
 
@@ -115,15 +114,6 @@ impl SavingsLedger for BuiltinSavingsLedger {
             .fetch_add(evidence.original_tokens, Ordering::Relaxed);
 
         let ref_id = evidence.evidence_ref.clone();
-
-        ocla_bus::emit(OclaEvent::SavingsRecorded {
-            input_saved: saved,
-            output_saved: 0,
-            source: SavingsSource::Compression,
-            attribution_id: None,
-            evidence_class: None,
-            measurement_method: None,
-        });
 
         let mut entries = self
             .entries

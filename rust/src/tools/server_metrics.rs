@@ -1,8 +1,37 @@
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::server::{CepComputedStats, CrpMode, LeanCtxServer, ToolCallRecord};
 use super::startup::auto_consolidate_knowledge;
 use super::{ctx_compress, ctx_share};
+
+/// Single-flight flag for the Pro usage scan in `record_call`.
+static PRO_SIGNAL_SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Clears `PRO_SIGNAL_SCAN_RUNNING` when the scan ends, even on panic or when
+/// the blocking task is dropped unrun.
+struct ProSignalScanGuard;
+
+impl Drop for ProSignalScanGuard {
+    fn drop(&mut self) {
+        PRO_SIGNAL_SCAN_RUNNING.store(false, Ordering::Release);
+    }
+}
+
+/// The part of the live session `local_usage_signals` reads (its id and the
+/// agents in its evidence), cloned so the scan can run without the lock.
+fn pro_signal_probe(
+    session: &crate::core::session::SessionState,
+) -> crate::core::session::SessionState {
+    let mut probe = crate::core::session::SessionState::new();
+    probe.id.clone_from(&session.id);
+    probe.evidence = session
+        .evidence
+        .iter()
+        .filter(|record| record.agent_id.is_some())
+        .cloned()
+        .collect();
+    probe
+}
 
 /// Moves the security events recorded since the last call into the session's
 /// counters and captures the value snapshot the display channels read.
@@ -273,16 +302,26 @@ impl LeanCtxServer {
         publish_value_snapshot(value_snapshot);
 
         let pro_count = self.pro_trigger_check_count.fetch_add(1, Ordering::Relaxed) + 1;
-        if pro_count.is_multiple_of(10) {
-            let signals = {
+        if pro_count.is_multiple_of(10) && !PRO_SIGNAL_SCAN_RUNNING.swap(true, Ordering::AcqRel) {
+            // The usage scan deserializes every persisted session. Running it
+            // on a runtime worker while holding the session lock stalled every
+            // concurrent tool call behind it (a queued writer blocks new
+            // readers), so snapshot only what the scan reads and move it off
+            // the async path; at most one scan runs at a time.
+            let running = ProSignalScanGuard;
+            let probe = {
                 let session = self.session.read().await;
-                crate::core::pro_triggers::local_usage_signals(&session)
+                pro_signal_probe(&session)
             };
-            tokio::task::spawn_blocking(move || {
+            drop(tokio::task::spawn_blocking(move || {
+                let signals = {
+                    let _running = running;
+                    crate::core::pro_triggers::local_usage_signals(&probe)
+                };
                 for nudge in crate::core::pro_triggers::evaluate_triggers(&signals) {
                     tracing::info!(kind = ?nudge.kind, message = %nudge.message, "lean-ctx Pro trigger fired");
                 }
-            });
+            }));
         }
 
         if let Some(prepared) = pending_save {
@@ -856,6 +895,49 @@ pub(crate) fn write_science_live_stats() {
         if let Ok(json) = serde_json::to_string_pretty(&stats) {
             let _ = std::fs::write(dir.join("science-live.json"), json);
         }
+    }
+}
+
+#[cfg(test)]
+mod pro_signal_probe_tests {
+    use super::*;
+    use crate::core::session::{EvidenceKind, EvidenceRecord, SessionState};
+
+    fn evidence(agent: Option<&str>) -> EvidenceRecord {
+        EvidenceRecord {
+            kind: EvidenceKind::ToolCall,
+            key: "tool:ctx_read".into(),
+            value: Some("payload that the scan never reads".into()),
+            tool: Some("ctx_read".into()),
+            input_md5: None,
+            output_md5: None,
+            agent_id: agent.map(String::from),
+            client_name: None,
+            task_id: None,
+            timestamp: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn probe_keeps_id_and_agent_tagged_evidence_only() {
+        let mut session = SessionState::new();
+        session.evidence = vec![evidence(Some("a")), evidence(None), evidence(Some("b"))];
+        let probe = pro_signal_probe(&session);
+        assert_eq!(probe.id, session.id);
+        let agents: Vec<_> = probe
+            .evidence
+            .iter()
+            .filter_map(|r| r.agent_id.as_deref())
+            .collect();
+        assert_eq!(agents, ["a", "b"]);
+        assert_eq!(probe.evidence.len(), 2);
+    }
+
+    #[test]
+    fn scan_guard_releases_flag_when_dropped_unrun() {
+        PRO_SIGNAL_SCAN_RUNNING.store(true, Ordering::Release);
+        drop(ProSignalScanGuard);
+        assert!(!PRO_SIGNAL_SCAN_RUNNING.load(Ordering::Acquire));
     }
 }
 

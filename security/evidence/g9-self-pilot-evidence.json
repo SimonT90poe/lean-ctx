@@ -37,7 +37,7 @@
       "signatures": 1,
       "task": 2
     },
-    "registered_agents": 43,
+    "registered_agent_identities": 43,
     "shell_commands": 121338,
     "stream_tracked_results": 24042,
     "tokens_saved": 84727107,

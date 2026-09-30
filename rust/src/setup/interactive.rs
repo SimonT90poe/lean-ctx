@@ -234,7 +234,7 @@ pub fn run_setup() {
                     "  \x1b[2mWithout it: MCP tools, shell hooks, gain tracking, and memory\x1b[0m"
                 );
                 println!(
-                    "  \x1b[2mall work normally. The proxy adds ~5-15% extra savings on top.\x1b[0m"
+                    "  \x1b[2mall work normally. The proxy compresses API traffic on top.\x1b[0m"
                 );
                 println!();
                 print!("  Enable the API proxy? [y/N] ");

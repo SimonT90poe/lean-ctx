@@ -601,27 +601,68 @@ impl CtxReadTool {
                     let tuning =
                         crate::tools::ctx_read::ReadTuning::resolve(aggressiveness, &protect_owned);
 
-                    // Helper: acquire write lock with deadline.
+                    // Helper: acquire write lock with deadline. `None` means the
+                    // lock stayed contended past the deadline; callers degrade
+                    // to an uncached read instead of failing it.
                     macro_rules! acquire_write {
                         ($deadline_secs:expr, $label:expr) => {{
-                            let deadline = std::time::Instant::now()
-                                + std::time::Duration::from_secs($deadline_secs);
+                            let deadline =
+                                std::time::Instant::now() + cache_lock_deadline($deadline_secs);
                             loop {
                                 if cancel_flag.load(Ordering::Relaxed) {
                                     return;
                                 }
                                 if let Ok(guard) = cache_lock.try_write() {
-                                    break guard;
+                                    break Some(guard);
                                 }
                                 if std::time::Instant::now() >= deadline {
-                                    tracing::error!(
-                                        "ctx_read: cache write-lock timeout ({}) for {path_owned}",
+                                    tracing::warn!(
+                                        "ctx_read: cache write-lock timeout ({}) for {path_owned}, \
+                                         serving uncached",
                                         $label,
                                     );
+                                    break None;
+                                }
+                                std::thread::sleep(std::time::Duration::from_millis(50));
+                            }
+                        }};
+                    }
+
+                    // Work that needs no cache state runs before the write lock.
+                    // The first `count_tokens` call builds the BPE tables (seconds
+                    // in debug builds); done under the lock it starved every
+                    // concurrent read into the deadline. Counting the preread
+                    // here also turns the count inside `cache.store()` into a
+                    // token-cache hit.
+                    let preread_tokens = preread.as_deref().map(crate::core::tokens::count_tokens);
+                    let mode_eff = if mode != "raw"
+                        && !mode.starts_with("lines:")
+                        && crate::core::config::Config::load()
+                            .proxy
+                            .is_path_compress_protected(&path_owned)
+                    {
+                        "full".to_string()
+                    } else {
+                        mode.clone()
+                    };
+
+                    // 2b-i: Brief write lock — prepare cache state, resolve
+                    // mode, check for hits. Sub-millisecond: HashMap lookups,
+                    // staleness checks, raw-content storage for new files.
+                    let outcome = 'prepare: {
+                        let Some(mut cache) = acquire_write!(10, "prepare 10s") else {
+                            match prepare_uncached(
+                                preread,
+                                preread_tokens,
+                                &path_owned,
+                                &mode_eff,
+                                &tuning,
+                                task_ref,
+                            ) {
+                                Ok(uncached) => break 'prepare uncached,
+                                Err(msg) => {
                                     let _ = tx.send((
-                                        format!(
-                                            "cache lock contention for {path_owned} — retry in a moment"
-                                        ),
+                                        msg,
                                         "error".into(),
                                         0,
                                         false,
@@ -631,36 +672,8 @@ impl CtxReadTool {
                                     ));
                                     return;
                                 }
-                                std::thread::sleep(std::time::Duration::from_millis(50));
                             }
-                        }};
-                    }
-
-                    // 2b-i: Brief write lock — prepare cache state, resolve
-                    // mode, check for hits. Sub-millisecond: HashMap lookups,
-                    // staleness checks, raw-content storage for new files.
-                    #[allow(clippy::large_enum_variant)]
-                    enum PrepareOutcome {
-                        Hit(
-                            String,
-                            String,
-                            usize,
-                            bool,
-                            Option<String>,
-                            (u64, u64),
-                            ReuseOutcome,
-                        ),
-                        Compute {
-                            file_ref: String,
-                            resolved_mode: String,
-                            content: String,
-                            original_tokens: usize,
-                            reuse_outcome: ReuseOutcome,
-                        },
-                    }
-
-                    let outcome = {
-                        let mut cache = acquire_write!(10, "prepare 10s");
+                        };
                         let mut reuse_outcome = if cache_policy_bypassed {
                             ReuseOutcome::PolicyBypass
                         } else if fresh {
@@ -679,17 +692,6 @@ impl CtxReadTool {
                             || crate::tools::ctx_read::force_fresh_env()
                             || (crate::tools::ctx_read::is_subagent_context()
                                 && !crate::core::conversation::scope_enabled());
-
-                        let mode_eff = if mode != "raw"
-                            && !mode.starts_with("lines:")
-                            && crate::core::config::Config::load()
-                                .proxy
-                                .is_path_compress_protected(&path_owned)
-                        {
-                            "full".to_string()
-                        } else {
-                            mode.clone()
-                        };
 
                         if effective_fresh {
                             cache.invalidate(&path_owned);
@@ -829,6 +831,7 @@ impl CtxReadTool {
                                         content: c.unwrap_or_default(),
                                         original_tokens: orig_tok,
                                         reuse_outcome,
+                                        cacheable: true,
                                     }
                                 }
                             } else {
@@ -840,6 +843,7 @@ impl CtxReadTool {
                                     content: c.unwrap_or_default(),
                                     original_tokens: orig_tok,
                                     reuse_outcome,
+                                    cacheable: true,
                                 }
                             }
                         } else {
@@ -899,6 +903,7 @@ impl CtxReadTool {
                                 content: raw,
                                 original_tokens: sr.original_tokens,
                                 reuse_outcome,
+                                cacheable: true,
                             }
                         }
                     }; // write lock released
@@ -907,8 +912,11 @@ impl CtxReadTool {
                     {
                         // Update last_mode for compressed-cache hits so the auto-mode
                         // resolver can reuse this mode on future re-reads (#E26).
-                        let mut cache = acquire_write!(10, "hit last_mode 10s");
-                        if let Some(entry) = cache.get_mut(&path_owned) {
+                        // The hit is already in hand: a contended lock only skips
+                        // the bookkeeping, never the delivery.
+                        if let Some(mut cache) = acquire_write!(10, "hit last_mode 10s")
+                            && let Some(entry) = cache.get_mut(&path_owned)
+                        {
                             entry.last_mode.clone_from(&rm);
                         }
                         let _ = tx.send((c, rm, orig, hit, fref, ss, reuse_outcome));
@@ -920,6 +928,7 @@ impl CtxReadTool {
                         content: compute_content,
                         original_tokens,
                         reuse_outcome,
+                        cacheable,
                     } = outcome
                     else {
                         unreachable!()
@@ -1007,22 +1016,11 @@ impl CtxReadTool {
                     // Graceful degradation: if the lock cannot be acquired
                     // within 5s, return the result without caching it.
                     {
-                        let deadline =
-                            std::time::Instant::now() + std::time::Duration::from_secs(5);
-                        let cache_guard = loop {
-                            if cancel_flag.load(Ordering::Relaxed) {
-                                return;
-                            }
-                            if let Ok(g) = cache_lock.try_write() {
-                                break Some(g);
-                            }
-                            if std::time::Instant::now() >= deadline {
-                                tracing::warn!(
-                                    "ctx_read: store-lock timeout (5s) for {path_owned},                                      returning without caching"
-                                );
-                                break None;
-                            }
-                            std::thread::sleep(std::time::Duration::from_millis(50));
+                        let computed_tokens = crate::core::tokens::count_tokens(&computed);
+                        let cache_guard = if cacheable {
+                            acquire_write!(5, "store 5s")
+                        } else {
+                            None
                         };
 
                         if let Some(mut cache) = cache_guard {
@@ -1046,7 +1044,7 @@ impl CtxReadTool {
                                 bt.record_read(
                                     &path_owned,
                                     &rmode,
-                                    crate::core::tokens::count_tokens(&computed),
+                                    computed_tokens,
                                     original_tokens,
                                 );
                             }
@@ -1472,6 +1470,11 @@ pub(crate) use helpers::task_intent_steers_read;
 use helpers::apply_verdict;
 use helpers::{auto_degrade_read_mode, extract_file_summary, record_attribution_result};
 
+// #660 LOC gate: cache-lock deadline and the uncached fallback.
+#[path = "ctx_read_uncached.rs"]
+mod uncached;
+use uncached::{PrepareOutcome, cache_lock_deadline, prepare_uncached};
+
 #[path = "ctx_read_window.rs"]
 mod window;
 #[allow(unused_imports)]
@@ -1492,7 +1495,6 @@ mod security_tests;
 
 // #660 LOC gate: repo-param tests split out to keep this file under the line
 // cap — see `ctx_read_repo_param_tests.rs`.
-
 #[cfg(test)]
 #[path = "ctx_read_repo_param_tests.rs"]
 mod repo_param_tests;

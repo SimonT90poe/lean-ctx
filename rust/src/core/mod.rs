@@ -1,8 +1,6 @@
 // ---------------------------------------------------------------------------
 // Domain: Compression
 // ---------------------------------------------------------------------------
-pub mod adaptive_chunking;
-pub mod adaptive_compression;
 pub(crate) mod aggressiveness;
 pub mod attention_context;
 pub(crate) mod auto_capture;
@@ -31,7 +29,6 @@ pub mod eval_ab;
 pub mod eval_harness;
 pub(crate) mod extractive;
 pub mod finops_export;
-pub mod fleet_analytics;
 pub(crate) mod foreign_mcp;
 pub mod html_crush;
 #[allow(unused_imports)]
@@ -41,7 +38,6 @@ pub mod integration_proof;
 #[allow(dead_code)]
 pub(crate) mod invocation_admission;
 pub mod json_crush;
-pub mod json_sample;
 pub(crate) mod markdown_compact;
 pub mod output_sanitizer;
 #[allow(dead_code)]
@@ -52,7 +48,6 @@ pub mod predictive_prefetch;
 pub mod preservation;
 pub mod pro_triggers;
 pub mod process_guard;
-pub mod progressive_compression;
 pub(crate) mod protect;
 pub mod rabin_karp;
 #[allow(dead_code)]
@@ -62,7 +57,6 @@ pub(crate) mod receipt_document_adapter;
 pub mod relevance_tracker;
 pub mod rule_artifacts;
 pub(crate) mod rule_discovery;
-pub mod rule_scorer;
 pub mod rules_canonical;
 pub mod rules_channel;
 pub(crate) mod rules_overhead;
@@ -75,7 +69,6 @@ pub mod solution_commercial;
 pub mod solution_rules;
 pub mod solution_tracker;
 pub mod solution_types;
-pub mod structural_tokenizer;
 pub(crate) mod structured_read;
 pub mod tabular_crush;
 pub mod verbosity;
@@ -113,7 +106,6 @@ pub mod graph_context;
 pub(crate) mod graph_coordinator;
 pub(crate) mod graph_enricher;
 pub mod graph_export;
-pub mod graph_features;
 pub mod graph_index;
 pub(crate) mod graph_parity;
 pub mod graph_provider;
@@ -125,6 +117,7 @@ pub(crate) mod repomap;
 // Domain: Context
 // ---------------------------------------------------------------------------
 pub mod context_artifacts;
+pub(crate) mod context_bundle;
 pub mod context_column;
 pub(crate) mod context_compiler;
 pub mod context_deficit;
@@ -146,7 +139,6 @@ pub(crate) mod context_proof;
 pub mod context_proof_v2;
 pub mod context_radar;
 pub(crate) mod context_snapshot;
-pub mod cross_customer_learning;
 pub mod cross_source_edges;
 pub mod cross_source_hints;
 pub(crate) mod customer_proof_v2;
@@ -157,7 +149,6 @@ pub(crate) mod customer_proof_v2;
 pub mod claim_extractor;
 pub(crate) mod cognition_loop;
 pub(crate) mod cognition_scheduler;
-pub mod execution_ledger;
 pub mod knowledge;
 pub(crate) mod knowledge_bootstrap;
 pub mod knowledge_bridge;
@@ -264,7 +255,6 @@ pub mod model_router;
 pub mod shadow;
 pub mod task_relevance;
 pub mod task_spine;
-pub mod token_calibration;
 
 // ---------------------------------------------------------------------------
 // Domain: Diagnostics & Quality
@@ -284,7 +274,6 @@ pub mod billing;
 pub(crate) mod calibrator;
 pub mod code_health;
 pub(crate) mod cognitive_gate;
-pub mod cognitive_load;
 pub mod conformance;
 pub mod contracts;
 pub mod cost_per_outcome;
@@ -311,7 +300,6 @@ pub(crate) mod verification_observability;
 // Domain: Config & Infrastructure
 // ---------------------------------------------------------------------------
 pub mod active_inference;
-pub mod agent_attribution;
 pub mod agent_budget;
 pub mod agent_lease;
 pub mod anchor;
@@ -325,12 +313,10 @@ pub(crate) mod budget;
 pub mod budget_tracker;
 pub mod budgets;
 pub mod cache;
-pub mod cache_diagnostics;
 pub(crate) mod cache_telemetry;
 pub mod capabilities;
 pub mod capsule_transport;
 pub mod causal_attribution;
-pub mod chain_compression;
 pub(crate) mod cli_cache;
 pub(crate) mod client_capabilities;
 pub(crate) mod client_constraints;
@@ -340,7 +326,6 @@ pub mod config;
 pub(crate) mod config_heal;
 pub mod consolidation;
 pub mod consolidation_engine;
-pub mod content_handle;
 pub mod context_capsule;
 pub(crate) mod contextops;
 pub(crate) mod conversation;
@@ -350,7 +335,6 @@ pub mod data_dir;
 pub(crate) mod debug_log;
 #[allow(unused)]
 pub(crate) mod delivered_ranges;
-pub mod delta_response;
 pub mod diagnostics_store;
 pub mod echo_ratio;
 pub mod editor_signal;
@@ -359,7 +343,6 @@ pub mod error;
 pub mod events;
 pub(crate) mod eviction_orchestrator;
 pub(crate) mod evidence;
-pub mod evidence_classification;
 pub mod evidence_ledger;
 pub mod extension_registry;
 pub mod extractors;
@@ -386,15 +369,10 @@ pub mod live_evidence_ledger;
 pub mod marginal_gate;
 pub mod mcp_catalog;
 pub mod metering;
-pub mod negative_knowledge;
 pub mod nudge;
 pub mod ocla;
-pub mod ocla_bus;
 pub(crate) mod quality_benchmark;
 pub(crate) mod qubo_select;
-pub mod query_aware;
-pub mod session_budget;
-pub mod work_graph;
 
 pub(crate) mod agent_registry;
 pub mod compliance;
@@ -403,7 +381,6 @@ pub mod edit_metering;
 pub(crate) mod edit_quality;
 pub(crate) mod efficacy;
 pub mod evidence_bundle;
-pub mod evidence_flow;
 pub mod grammar_usage;
 pub(crate) mod graph_cache;
 pub(crate) mod http_client;
@@ -496,7 +473,6 @@ pub(crate) mod share;
 pub mod shell_allowlist;
 pub mod startup_guard;
 pub mod stats;
-pub mod structural_diff;
 pub mod symbol_map;
 pub(crate) mod syntax_validate;
 pub(crate) mod task_benchmark;

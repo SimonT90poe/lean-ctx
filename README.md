@@ -166,15 +166,17 @@ metric for comparing useful AI work.
 
 ### 5. Shadow Recommendations — savings proof
 
-Shadow Mode compares LeanCTX treatment with a configured baseline without
-changing the active workflow. Its reports show cost, tokens, CPAO, and whether
-quality held, then recommend savings only when the comparison supports them.
+Shadow Mode estimates what the same work would have cost without LeanCTX,
+without changing the active workflow. The baseline is **simulated** from the
+uncompressed token counts and the same outcome signals, not a second measured
+run, so its reports estimate cost, tokens and CPAO deltas; they do not measure
+answer quality.
 
 ## Cost Intelligence
 
 LeanCTX automatically tracks local cost and outcome signals; it does not add
 those reports to agent context. CPAO — cost per accepted outcome — is the
-north-star metric, while Shadow Mode provides a baseline comparison for savings.
+north-star metric, while Shadow Mode provides a simulated baseline for savings estimates.
 
 ```bash
 lean-ctx savings --period week                 # costs, token savings, and CPAO
@@ -631,15 +633,18 @@ long-lived proxy rail has a deterministic self-verify —
 model (digest `f5ed145e61ce3689`, 99.4% input-side saving on cache-priced rails;
 methodology: [bench/agent-task/r2](bench/agent-task/r2/README.md)).
 
-Accuracy isn't a vibe: the lossy stages are **CI-gated**. A model-free A/B gate
-proves the JSON crusher keeps *every* gold answer while cutting tokens, and proxy
-rewrites are byte-stable by contract, so Anthropic (90%) / OpenAI (50%) prompt-cache
-discounts survive compression. A deterministic **off-vs-on testbench**
-(`lean-ctx eval testbench`) extends the proof to *answers*: it runs pinned real repos
-through a raw-dump baseline and through lean-ctx at an identical token budget, grades
-free-form QA with an LLM judge and code with each repo's own tests, and emits
-`FINDINGS.md` (tokens / turns / walltime / quality) plus a regressions file — with a
-committed recorded subset that blocks CI on any regression.
+Accuracy is gated, within stated limits. A model-free A/B gate checks that the JSON
+crusher keeps every gold answer in its fixtures while cutting tokens, and proxy
+rewrites are byte-stable by contract, so Anthropic (90%) / OpenAI (up to 90% on GPT-5-family) prompt-cache
+discounts survive compression. The **off-vs-on testbench** (`lean-ctx eval testbench`)
+runs pinned real repos through a raw-dump baseline and through lean-ctx at an
+identical token budget, grades free-form QA with an LLM judge and code with each
+repo's own tests, and emits `FINDINGS.md` (tokens / turns / walltime / quality) plus a
+regressions file. What CI replays is a small committed recording: it is a
+**mechanism gate** (it catches a broken pipeline or a changed grade), not evidence
+that compression preserves answer quality — the recorded suites are far below the 30
+paired tasks `lean-ctx eval ab` needs before it stops labelling a run underpowered.
+A powered quality study is still open ([#1905](https://github.com/yvgude/lean-ctx/issues/1905)).
 
 - **Latest snapshot**: [BENCHMARKS.md](BENCHMARKS.md)
 - **Reproduce**: `lean-ctx benchmark report .`
