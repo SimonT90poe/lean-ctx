@@ -621,9 +621,15 @@ mod tests {
         context.put("new one", "codex", "fact").unwrap();
         context.put("new two", "cursor", "fact").unwrap();
         let mut entries = context.load().unwrap();
-        entries[0].last_accessed = 0;
+        entries
+            .iter_mut()
+            .find(|entry| entry.content == "old")
+            .unwrap()
+            .last_accessed = 0;
         context.save(&entries).unwrap();
-        assert_eq!(context.prune(1, 1).unwrap(), 2);
+        // An hour, not a second: a slow runner must not age the fresh entries
+        // out. "old" expires by age, and one fresh entry goes to the cap.
+        assert_eq!(context.prune(3600, 1).unwrap(), 2);
         assert_eq!(context.stats().unwrap().total_entries, 1);
     }
 
