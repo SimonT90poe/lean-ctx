@@ -125,6 +125,7 @@ pub(crate) mod repomap;
 // Domain: Context
 // ---------------------------------------------------------------------------
 pub mod context_artifacts;
+pub(crate) mod context_bundle;
 pub mod context_column;
 pub(crate) mod context_compiler;
 pub mod context_deficit;

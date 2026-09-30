@@ -23,6 +23,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Still open in #1905: a powered with/without study and a real holdout arm
   for compression.
 
+### Added — `lean-ctx pack --limit`: one bundle that fits a chat box (#1885)
+
+- `lean-ctx pack [path] --limit 128k` writes one self-contained XML document
+  (`<bundle>` with `<task>`, `<summary>`, `<directory_structure>`, optional
+  `<knowledge>`, `<files>`) for pasting into a web chat or piping to an agent.
+  The limit is a hard cap on the whole document, measured in characters
+  (default, what chat inputs count) or `o200k_base` tokens (`--unit tokens`);
+  `128000`, `128k` and `2M` are accepted.
+- Files are ranked by the task (`--intent "…"`, default: the session task)
+  and the import graph (personalized PageRank from the matching files), with
+  intent-specific boosts (review: changed files; explore: README/manifests).
+  The best files go in full, the next tier as signatures, the rest appear
+  only in the tree, which collapses to directory counts when it gets too big.
+- Selection honours `.gitignore`/`.ignore`, skips lockfiles, minified files,
+  binaries and files over 512 KiB, and takes `--include`/`--ignore` globs.
+  Files with detected secrets and secret-like paths (`.env`, keys) are
+  withheld and listed in the summary; `--no-security-check` needs `--force`.
+- `--emit plain` prints only the allocation report (which file, which view,
+  why), `--emit both` sends the report to stderr and the XML to stdout.
+  `-o <file>`, `--copy` (clipboard) and `--stats` (`files= chars= tokens=`)
+  are supported. Output is deterministic. Exit `1` when even the frame does
+  not fit the limit (the output is still written), `2` on bad flags.
+- `--with-knowledge[=decision,architecture,…]` appends current, public,
+  curated project facts (`--with-auto` adds machine-derived ones,
+  `--knowledge-limit` caps the count). Unlike the proposal, knowledge counts
+  toward the limit so the paste never overflows.
+- MCP: `ctx_pack action=bundle` with the same options (`path`, `limit`,
+  `unit`, `intent`, `emit`, `include`, `ignore`, `with_knowledge`, `file`);
+  the secret check is always on there.
+- Not yet: `--compress`, `--truncate`, `--strip-comments`, `--trim-base64`,
+  `--show-line-numbers`.
+
 ### Fixed — Windows: a timed-out or cancelled command no longer leaves processes behind (#1920)
 
 - On Windows, `ctx_shell`, `ctx_execute` and the sandbox only ended the shell

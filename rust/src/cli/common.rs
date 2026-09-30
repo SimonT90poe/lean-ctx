@@ -212,7 +212,7 @@ fn expand_home(path: &str) -> String {
     path.to_string()
 }
 
-fn promote_to_git_root(path: &str) -> String {
+pub(crate) fn promote_to_git_root(path: &str) -> String {
     let mut p = std::path::Path::new(path);
     loop {
         if p.join(".git").exists() {
