@@ -3,7 +3,7 @@ Generated: 2026-07-30 13:50
 
 ## Methodology
 - **Engine**: Codex CLI (`codex exec --sandbox read-only`)
-- **Model**: GPT-4.1 (via Codex)
+- **Model**: gpt-5.6-terra via ChatGPT subscription, as recorded in every result JSON (an earlier version of this report said "GPT-4.1"; corrected for #1905)
 - **Python**: 3.11
 - **Control arm**: Raw/uncompressed context
 - **Compressed arm**: lean-ctx compressed context (same model, same tasks)

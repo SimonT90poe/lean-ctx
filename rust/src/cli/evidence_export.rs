@@ -98,7 +98,7 @@ fn export(args: &[String]) -> io::Result<(PathBuf, String)> {
     fs::write(
         dir.join("evidence_summary.md"),
         format!(
-            "# LeanCTX Evidence Package\n\nVersion: lean-ctx {}\n\n## Token Reduction\n- Average Reduction: {:.2}% ({} task benchmark)\n- Peak Reduction: {:.2}% (tree operations)\n\n## Value Gate\n- Total Tasks Tracked: {}\n- Accepted Rate: {:.2}%\n- Average CPAO: {}\n- Total Cost Saved: {}\n\n## Decision Loop Proof\n- Evidence Chain: {}\n- Tasks Proven: {}/5\n- All intents classified correctly: {}\n\n## Shadow Analysis\n- Baseline Cost: {}\n- Treatment Cost: {}\n- Savings: {} ({}%)\n- Quality Maintained: {}\n\n## Model Readiness\n- Gold Validation Set: {} tasks\n- Rules Baseline Accuracy: {:.2}%\n- Semantic Model: READY FOR TRAINING\n",
+            "# LeanCTX Evidence Package\n\nVersion: lean-ctx {}\n\n## Token Reduction\n- Average Reduction: {:.2}% ({} task benchmark)\n- Peak Reduction: {:.2}% (tree operations)\n\n## Value Gate\n- Total Tasks Tracked: {}\n- Accepted Rate: {:.2}%\n- Average CPAO: {}\n- Total Cost Saved: {}\n\n## Decision Loop Proof\n- Evidence Chain: {}\n- Tasks Proven: {}/5\n- All intents classified correctly: {}\n\n## Shadow Analysis\n- Baseline Cost: {}\n- Treatment Cost: {}\n- Savings: {} ({}%)\n- Outcome Acceptance Not Below Simulated Baseline: {}\n\n## Model Readiness\n- Gold Validation Set: {} tasks\n- Rules Baseline Accuracy: {:.2}%\n- Semantic Model: READY FOR TRAINING\n",
             env!("CARGO_PKG_VERSION"),
             average,
             tasks,

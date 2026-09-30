@@ -415,10 +415,11 @@ WORKFLOW: create -> export -> import -> install for sharing context state.
 ANTIPATTERN: NOT for ephemeral session save (use ctx_session).
 Context Package Manager — create, install, manage portable context packages
 with knowledge, graph, session patterns, and gotchas.
-Actions: pr, create, list, info, remove, install, export, import, auto_load, summary.
+Actions: pr, create, list, info, remove, install, export, import, auto_load, summary, bundle.
+bundle: one budgeted XML document (task-ranked files, signatures, tree) that fits a chat input box.
 Saves tokens: pre-built context state (avoids re-building).
 
-Parameters: `action`*, `apply`, `author`, `base`, `depth`, `description`, `diff`, `enable`, `file`, `format`, `layers`, `level`, `name`, `project_root`, `scope`, `tags`, `version`
+Parameters: `action`*, `apply`, `author`, `base`, `depth`, `description`, `diff`, `emit`, `enable`, `file`, `format`, `ignore`, `include`, `intent`, `knowledge_limit`, `layers`, `level`, `limit`, `name`, `path`, `project_root`, `scope`, `tags`, `unit`, `version`, `with_auto`, `with_knowledge`
 
 ## `ctx_package`
 

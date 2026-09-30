@@ -673,6 +673,60 @@ async fn mcp_ctx_read_records_new_cross_agent_delivery() {
     );
 }
 
+/// A read whose cache write lock stays contended past the deadline still
+/// delivers the file. It used to fail with "cache lock contention … retry in a
+/// moment", which is how 16 parallel cold reads lost a file when the first one
+/// built the tokenizer while holding the lock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn contended_cache_lock_degrades_to_uncached_read() {
+    use crate::core::cache::SessionCache;
+    use crate::core::session::SessionState;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("contended.rs");
+    std::fs::write(&file, "fn contended_lock_payload() {}\n").unwrap();
+    let path = file.to_string_lossy().to_string();
+    let cache = Arc::new(RwLock::new(SessionCache::new()));
+    let ctx = ToolContext {
+        project_root: dir.path().to_string_lossy().to_string(),
+        resolved_paths: std::collections::HashMap::from([("path".to_string(), path.clone())]),
+        cache: Some(cache.clone()),
+        session: Some(Arc::new(RwLock::new(SessionState::new()))),
+        ..ToolContext::default()
+    };
+
+    let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::spawn(move || {
+        let _guard = cache.blocking_write();
+        locked_tx.send(()).unwrap();
+        let _ = release_rx.recv_timeout(std::time::Duration::from_secs(20));
+    });
+    locked_rx.recv().unwrap();
+
+    let args = json!({ "path": path, "mode": "full" })
+        .as_object()
+        .unwrap()
+        .clone();
+    let result = tokio::task::block_in_place(|| CtxReadTool.handle(&args, &ctx));
+    release_tx.send(()).unwrap();
+    holder.join().unwrap();
+
+    let output = result.expect("a contended cache lock must not fail the read");
+    assert!(
+        output.text.contains("contended_lock_payload"),
+        "got: {}",
+        output.text
+    );
+    assert!(
+        !output.text.contains("lock contention"),
+        "got: {}",
+        output.text
+    );
+}
+
 /// Regression test for Issue #229: a zombie thread holding the cache write-lock
 /// must not block subsequent reads indefinitely. The try_write() loop inside
 /// the spawned thread should respect its 25s deadline and the cancellation flag.

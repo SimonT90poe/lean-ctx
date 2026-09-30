@@ -5,6 +5,56 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — quality claims match what the gates can show (#1905)
+
+- `lean-ctx eval ab` reports now print `POWER: underpowered` when a run has
+  fewer than 30 paired tasks, so a small replay reads as a pipeline check, not
+  as evidence that compression keeps answer quality.
+- Shadow reports say the baseline is simulated from the same outcome signals.
+  "Quality maintained" became "Outcome acceptance not below baseline", and
+  recommendations no longer claim quality was kept. The evidence export uses
+  the same wording.
+- The profile `constraints` docs state that `quality_floor` and
+  `max_context_tokens` are offline-only (benchmark and calibrate) and that the
+  other constraint fields are not read yet.
+- README: the CI testbench and A/B replays are described as mechanism gates,
+  and Shadow Mode as a simulated baseline. The archived E-Bench v2 report now
+  names the model its result files record (gpt-5.6-terra, not GPT-4.1).
+- Still open in #1905: a powered with/without study and a real holdout arm
+  for compression.
+
+### Added — `lean-ctx pack --limit`: one bundle that fits a chat box (#1885)
+
+- `lean-ctx pack [path] --limit 128k` writes one self-contained XML document
+  (`<bundle>` with `<task>`, `<summary>`, `<directory_structure>`, optional
+  `<knowledge>`, `<files>`) for pasting into a web chat or piping to an agent.
+  The limit is a hard cap on the whole document, measured in characters
+  (default, what chat inputs count) or `o200k_base` tokens (`--unit tokens`);
+  `128000`, `128k` and `2M` are accepted.
+- Files are ranked by the task (`--intent "…"`, default: the session task)
+  and the import graph (personalized PageRank from the matching files), with
+  intent-specific boosts (review: changed files; explore: README/manifests).
+  The best files go in full, the next tier as signatures, the rest appear
+  only in the tree, which collapses to directory counts when it gets too big.
+- Selection honours `.gitignore`/`.ignore`, skips lockfiles, minified files,
+  binaries and files over 512 KiB, and takes `--include`/`--ignore` globs.
+  Files with detected secrets and secret-like paths (`.env`, keys) are
+  withheld and listed in the summary; `--no-security-check` needs `--force`.
+- `--emit plain` prints only the allocation report (which file, which view,
+  why), `--emit both` sends the report to stderr and the XML to stdout.
+  `-o <file>`, `--copy` (clipboard) and `--stats` (`files= chars= tokens=`)
+  are supported. Output is deterministic. Exit `1` when even the frame does
+  not fit the limit (the output is still written), `2` on bad flags.
+- `--with-knowledge[=decision,architecture,…]` appends current, public,
+  curated project facts (`--with-auto` adds machine-derived ones,
+  `--knowledge-limit` caps the count). Unlike the proposal, knowledge counts
+  toward the limit so the paste never overflows.
+- MCP: `ctx_pack action=bundle` with the same options (`path`, `limit`,
+  `unit`, `intent`, `emit`, `include`, `ignore`, `with_knowledge`, `file`);
+  the secret check is always on there.
+- Not yet: `--compress`, `--truncate`, `--strip-comments`, `--trim-base64`,
+  `--show-line-numbers`.
+
 ### Fixed — Windows: a timed-out or cancelled command no longer leaves processes behind (#1920)
 
 - On Windows, `ctx_shell`, `ctx_execute` and the sandbox only ended the shell
@@ -99,6 +149,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   exists. Regulated deployments get redaction from policy-pack `[filters]`.
 - Source comments no longer claim unmeasured cognitive-mode savings or that
   lean-ctx cannot read Jira.
+
+### Fixed — parallel first reads no longer fail with "cache lock contention"
+
+- The first `ctx_read` of a session built the tokenizer while it held the
+  global cache lock. That takes seconds on a cold start. Every other read that
+  started at the same moment, for example a subagent reading a set of files in
+  parallel, waited behind it. Past the 10-second deadline those reads failed
+  with "cache lock contention for … — retry in a moment". The tokenizer and the
+  path-protection config are now loaded before the lock is taken, so the lock
+  is held for under a millisecond.
+- A read that still cannot get the lock in time returns the file without
+  caching it. Before, the read failed. The same applies to a cache hit: it is
+  delivered even when its bookkeeping cannot get the lock.
+- Every tenth tool call ran the Pro usage scan, which reads every saved
+  session from disk. The scan ran on the server's async workers and held the
+  session lock the whole time. With a long session history, all tool calls
+  running in parallel stalled behind it. The scan now works on a copy of the
+  two fields it needs, runs in the background, and never runs twice at once.
 
 ### Fixed — files in legacy Windows encodings are indexed
 

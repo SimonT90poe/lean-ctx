@@ -112,6 +112,10 @@ fn test_report_format() {
     assert!(text.contains("| Metric | Baseline | Treatment | Delta |"));
     assert!(text.contains("| Tokens | 2000 | 1600 | 400 saved |"));
     assert!(text.contains("| Avg CPAO (micros) | 12500 | 11500 | 1000 lower |"));
+    // #1905: the simulated baseline must never read as a measured quality check.
+    assert!(text.contains("the baseline is simulated"));
+    assert!(!text.contains("Quality maintained"));
+    assert!(!text.contains("maintaining quality"));
 }
 
 #[test]
