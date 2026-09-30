@@ -21,13 +21,12 @@ fn is_terminal_poll_file(path: &str) -> bool {
 /// Modes whose compressed output is useful for cross-agent relay.
 const RELAY_ELIGIBLE_MODES: &[&str] = &["map", "map:v2", "signatures", "signatures:v2"];
 
-/// Extract relay-eligible content from a read result.
-fn relay_eligible_content(result: &ReadOutput) -> (Option<&str>, Option<&str>) {
-    let mode = result.resolved_mode.as_str();
+/// Extract relay-eligible content from a rendered read.
+fn relay_eligible<'a>(mode: &'a str, content: &'a str) -> (Option<&'a str>, Option<&'a str>) {
     if RELAY_ELIGIBLE_MODES.iter().any(|m| mode.starts_with(m))
-        && result.content.len() <= MAX_RELAY_CONTENT_BYTES
+        && content.len() <= MAX_RELAY_CONTENT_BYTES
     {
-        (Some(&result.content), Some(mode))
+        (Some(content), Some(mode))
     } else {
         (None, None)
     }
@@ -342,8 +341,8 @@ fn handle_with_options_resolved_preread(
 
     if !effective_fresh_for_delivery
         && !compress_protected
-        && let Some((hash, mtime)) = delivery_metadata
-        && let Some(stub) = try_cross_agent_stub(path, mode, hash, mtime)
+        && let Some(fp) = delivery_metadata
+        && let Some(stub) = try_cross_agent_stub(path, mode, fp.hash, fp.mtime)
     {
         return stub;
     }
@@ -408,18 +407,14 @@ fn handle_with_options_resolved_preread(
     }
 
     if !result.is_cache_hit
-        && let Some((hash, mtime)) = delivery_metadata
+        && let Some(fp) = delivery_metadata
     {
-        let line_count = cache.get(path).map_or(0, |entry| entry.line_count as u32);
-        let relay = relay_eligible_content(&result);
-        record_cross_agent_delivery(
+        record_read_delivery(
             path,
-            hash,
-            mtime,
-            line_count,
+            fp,
+            &result.resolved_mode,
+            &result.content,
             result.output_tokens,
-            relay.0,
-            relay.1,
         );
     }
 
@@ -749,7 +744,7 @@ pub fn resolve_explicit_delta_mode(
     unchanged
 }
 
-pub(crate) fn file_blake3_prefix(path: &str) -> Option<([u8; 12], u64)> {
+pub(crate) fn file_blake3_prefix(path: &str) -> Option<DeliveryFingerprint> {
     let meta = std::fs::metadata(path).ok()?;
     let mtime = meta
         .modified()
@@ -762,7 +757,42 @@ pub(crate) fn file_blake3_prefix(path: &str) -> Option<([u8; 12], u64)> {
     let full = hash.as_bytes();
     let mut prefix = [0u8; 12];
     prefix.copy_from_slice(&full[..12]);
-    Some((prefix, mtime))
+    Some(DeliveryFingerprint {
+        hash: prefix,
+        mtime,
+        line_count: line_count_of(&bytes),
+    })
+}
+
+/// Content snapshot taken once per read for cross-agent delivery: the lookup
+/// and the record use the same hash, mtime and line count (#1909: records made
+/// from the MCP path previously carried a hardcoded `0L`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DeliveryFingerprint {
+    pub hash: [u8; 12],
+    pub mtime: u64,
+    pub line_count: u32,
+}
+
+/// Line count with `str::lines` semantics (the `SessionCache` convention): a
+/// trailing newline does not open an extra line.
+fn line_count_of(bytes: &[u8]) -> u32 {
+    let newlines = bytecount::count(bytes, b'\n');
+    let unterminated = usize::from(bytes.last().is_some_and(|b| *b != b'\n'));
+    u32::try_from(newlines + unterminated).unwrap_or(u32::MAX)
+}
+
+/// Whether relayed content recorded in `relay_mode` answers a request for
+/// `requested`. `auto` delegates the choice to lean-ctx, so any relay-eligible
+/// view fits; an explicit mode only accepts that mode or a versioned variant of
+/// it (`map` accepts `map:v2`) — never another view (`signatures` must not be
+/// answered with a `map`) and never a `lines:` window.
+fn relay_satisfies(requested: &str, relay_mode: &str) -> bool {
+    requested == "auto"
+        || relay_mode == requested
+        || relay_mode
+            .strip_prefix(requested)
+            .is_some_and(|rest| rest.starts_with(':'))
 }
 
 pub(crate) fn try_cross_agent_stub(
@@ -774,20 +804,18 @@ pub(crate) fn try_cross_agent_stub(
     if !crate::core::config::Config::load().ocla.delivery_enabled() {
         return None;
     }
-    if matches!(mode, "full" | "raw" | "diff") {
+    if matches!(mode, "full" | "raw" | "diff") || mode.starts_with("lines:") {
         return None;
     }
-    let current_agent = std::env::var("CURSOR_TASK_ID")
-        .or_else(|_| std::env::var("CLAUDECODE"))
-        .unwrap_or_else(|_| format!("local-{}", std::process::id()));
+    let current_agent = crate::core::agent_identity::delivery_agent_id();
     let current_conversation = crate::core::conversation::current_conversation_id()
-        .unwrap_or_else(|| current_agent.clone());
+        .unwrap_or_else(|| current_agent.to_string());
     let reg = crate::core::ocla::OclaRegistry::global();
     let record = crate::daemon_client::try_delivery_check_blocking(
         &hash,
         mtime,
         path,
-        Some(&current_agent),
+        Some(current_agent),
         Some(&current_conversation),
     )
     .or_else(|| {
@@ -795,15 +823,20 @@ pub(crate) fn try_cross_agent_stub(
             &hash,
             mtime,
             path,
-            Some(&current_agent),
+            Some(current_agent),
             Some(&current_conversation),
         )
     })?;
 
     let short = protocol::shorten_path(path);
 
+    // Relay carries the content itself, so it is correct in any conversation —
+    // provided it is the view the caller asked for.
     if let Some(ref content) = record.relay_content {
         let relay_mode = record.relay_mode.as_deref().unwrap_or("map");
+        if !relay_satisfies(mode, relay_mode) {
+            return None;
+        }
         let header = format!(
             "{short} [relayed from {} · {relay_mode} · {}L]",
             record.agent_id, record.line_count,
@@ -818,6 +851,19 @@ pub(crate) fn try_cross_agent_stub(
             output_tokens: tokens,
             is_cache_hit: true,
         });
+    }
+
+    // A content-free stub asserts "this is already in your context", which is
+    // only true when the delivery provably reached the caller's conversation
+    // (#1909). The registry never returns same-conversation records, so under
+    // conversation scoping this withholds every content-free stub; it survives
+    // only in explicit legacy mode (`LEAN_CTX_CONVERSATION_SCOPE=0`), whose
+    // contract is one daemon == one conversation.
+    if !crate::core::conversation::conversation_allows_stub(
+        Some(&current_conversation),
+        Some(&record.conversation_id),
+    ) {
+        return None;
     }
 
     let stub = format!(
@@ -836,6 +882,28 @@ pub(crate) fn try_cross_agent_stub(
     })
 }
 
+/// Records a completed (non-cache-hit) read for cross-agent delivery, relaying
+/// the rendered view when it is a compact, relay-eligible one. Shared by the
+/// CLI/daemon dispatch path and the MCP handler so both record identically.
+pub(crate) fn record_read_delivery(
+    path: &str,
+    fingerprint: DeliveryFingerprint,
+    resolved_mode: &str,
+    content: &str,
+    output_tokens: usize,
+) {
+    let relay = relay_eligible(resolved_mode, content);
+    record_cross_agent_delivery(
+        path,
+        fingerprint.hash,
+        fingerprint.mtime,
+        fingerprint.line_count,
+        output_tokens,
+        relay.0,
+        relay.1,
+    );
+}
+
 pub(crate) fn record_cross_agent_delivery(
     path: &str,
     hash: [u8; 12],
@@ -848,9 +916,7 @@ pub(crate) fn record_cross_agent_delivery(
     if !crate::core::config::Config::load().ocla.delivery_enabled() {
         return;
     }
-    let agent_id = std::env::var("CURSOR_TASK_ID")
-        .or_else(|_| std::env::var("CLAUDECODE"))
-        .unwrap_or_else(|_| format!("local-{}", std::process::id()));
+    let agent_id = crate::core::agent_identity::delivery_agent_id().to_string();
     let conversation_id =
         crate::core::conversation::current_conversation_id().unwrap_or_else(|| agent_id.clone());
     let entry = crate::core::ocla::types::DeliveryEntry {
@@ -910,20 +976,95 @@ mod tests {
     }
 
     #[test]
-    fn cross_agent_fallback_is_deterministic() {
-        // When no CURSOR_TASK_ID or CLAUDECODE env var is set, the fallback
-        // must be deterministic (not PID-based) for provider cache stability.
-        let _lock = crate::core::data_dir::test_env_lock();
-        crate::test_env::remove_var("CURSOR_TASK_ID");
-        crate::test_env::remove_var("CLAUDECODE");
-        let id1 = std::env::var("CURSOR_TASK_ID")
-            .or_else(|_| std::env::var("CLAUDECODE"))
-            .unwrap_or_else(|_| format!("local-{}", std::process::id()));
-        let id2 = std::env::var("CURSOR_TASK_ID")
-            .or_else(|_| std::env::var("CLAUDECODE"))
-            .unwrap_or_else(|_| format!("local-{}", std::process::id()));
-        assert_eq!(id1, id2, "fallback agent ID must be deterministic");
-        assert!(!id1.contains("proc:"), "must not contain PID");
+    fn line_count_matches_str_lines_semantics() {
+        for sample in ["", "a", "a\n", "a\nb", "a\nb\n", "\n\n", "a\r\nb\r\n"] {
+            assert_eq!(
+                super::line_count_of(sample.as_bytes()) as usize,
+                sample.lines().count(),
+                "line count diverged for {sample:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fingerprint_carries_real_line_count() {
+        // #1909: the MCP path recorded a hardcoded 0L.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("three.rs");
+        std::fs::write(&file, "fn a() {}\nfn b() {}\nfn c() {}\n").unwrap();
+        let fp = super::file_blake3_prefix(file.to_str().unwrap()).unwrap();
+        assert_eq!(fp.line_count, 3);
+    }
+
+    #[test]
+    fn relay_answers_only_the_requested_view() {
+        use super::relay_satisfies;
+        assert!(relay_satisfies("auto", "map:v2"));
+        assert!(relay_satisfies("auto", "signatures"));
+        assert!(relay_satisfies("map", "map"));
+        assert!(relay_satisfies("map", "map:v2"));
+        assert!(relay_satisfies("signatures", "signatures:v2"));
+        assert!(!relay_satisfies("signatures", "map:v2"));
+        assert!(!relay_satisfies("map", "mapx"));
+        assert!(!relay_satisfies("map:v2", "map"));
+        assert!(!relay_satisfies("aggressive", "map"));
+        assert!(!relay_satisfies("lines:1-5", "map"));
+    }
+
+    /// Records a foreign delivery for a fresh file and returns its path + key.
+    fn foreign_delivery(
+        relay: Option<(&str, &str)>,
+    ) -> (tempfile::TempDir, String, super::DeliveryFingerprint) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("foreign.rs");
+        std::fs::write(&file, "pub fn foreign() {}\npub fn other() {}\n").unwrap();
+        let path = file.to_string_lossy().to_string();
+        let fp = super::file_blake3_prefix(&path).unwrap();
+        crate::core::ocla::OclaRegistry::global()
+            .delivery_registry
+            .record_delivery(crate::core::ocla::types::DeliveryEntry {
+                blake3: fp.hash,
+                path: path.clone(),
+                line_count: fp.line_count,
+                token_count: 40,
+                agent_id: "claude-foreign".into(),
+                conversation_id: "conv-foreign".into(),
+                mtime: fp.mtime,
+                relay_content: relay.map(|(c, _)| c.to_string()),
+                relay_mode: relay.map(|(_, m)| m.to_string()),
+            });
+        (dir, path, fp)
+    }
+
+    #[test]
+    fn content_free_stub_withheld_for_another_conversation() {
+        // #1909: agent B in a new conversation must get content, never a stub
+        // claiming content that only agent A's context holds.
+        if !crate::core::conversation::scope_enabled() {
+            return; // legacy mode (LEAN_CTX_CONVERSATION_SCOPE=0) keeps the stub by contract
+        }
+        let (_dir, path, fp) = foreign_delivery(None);
+        for mode in ["auto", "signatures", "map", "aggressive"] {
+            assert!(
+                try_cross_agent_stub(&path, mode, fp.hash, fp.mtime).is_none(),
+                "content-free cross-agent stub leaked for mode={mode}"
+            );
+        }
+    }
+
+    #[test]
+    fn relay_served_only_for_matching_mode() {
+        let relay = "pub fn foreign() {}";
+        let (_dir, path, fp) = foreign_delivery(Some((relay, "map:v2")));
+        let hit = try_cross_agent_stub(&path, "map", fp.hash, fp.mtime)
+            .expect("map request must accept a map:v2 relay");
+        assert!(hit.content.contains(relay), "{}", hit.content);
+        assert!(hit.content.contains("· 2L]"), "{}", hit.content);
+        assert!(
+            try_cross_agent_stub(&path, "signatures", fp.hash, fp.mtime).is_none(),
+            "a signatures request must not be answered with a map relay"
+        );
+        assert!(try_cross_agent_stub(&path, "lines:1-2", fp.hash, fp.mtime).is_none());
     }
 
     #[test]

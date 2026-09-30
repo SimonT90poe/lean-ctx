@@ -24,6 +24,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Docs: removed the unmeasured "~5-15% extra savings" claim; OpenAI caching
   discounts are now described as "up to 90% on GPT-5-family".
 
+### Fixed — `ctx_read` stubs only claim content the caller actually has (#1904, #1909)
+
+- Every Claude Code process has `CLAUDECODE=1`, and that constant was used as
+  the cross-agent delivery id, so all Claude Code clients on a machine counted
+  as one agent. Delivery now uses its own per-process id: `LEAN_CTX_AGENT_ID`,
+  then `CURSOR_TASK_ID`, then `claude-<pid>`, `codex-<pid>` or `local-<pid>`.
+- A content-free cross-agent stub ("already in your context") is only served
+  when the delivery provably reached the caller's conversation. Agent B in a
+  new conversation now gets the content, never a stub pointing at agent A's
+  context. Relayed content is only reused for the view that was asked for, so
+  a `signatures` request is never answered with a `map`.
+- The MCP path recorded deliveries with a hard-coded line count of `0`. CLI,
+  daemon and MCP now record the same content snapshot.
+- Under Claude Code, sub-agents share their parent's lean-ctx process, so a
+  process scope cannot tell which agent is asking. Re-read stubs are withheld
+  there and each re-read returns the (compressed) content. `LEAN_CTX_SCOPE`
+  opts back in for integrations that run one agent per process. The
+  CLAUDE.md block (v10) drops the "re-reads ~13 tokens" claim.
+
 ### Fixed — quality claims match what the gates can show (#1905)
 
 - `lean-ctx eval ab` reports now print `POWER: underpowered` when a run has

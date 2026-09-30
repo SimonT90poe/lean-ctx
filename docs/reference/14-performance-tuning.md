@@ -218,6 +218,22 @@ On a phase-isolated **and** non-caching workload the cached-re-read lever has no
 surface and the injected prefix is pure re-billed overhead. That is an
 architecture–surface fit, not a failure mode — but you should tune for it.
 
+### Claude Code: re-read stubs are withheld by default
+
+Claude Code sub-agents reuse their parent's MCP connection, so the parent and
+every sub-agent talk to the **same** lean-ctx process. The only scope lean-ctx
+can derive there is process-wide (`proc:`), and a match on it cannot prove the
+content is in the *asking* agent's window. lean-ctx therefore fails closed:
+unchanged re-reads, same-variant `map`/`signatures` re-reads and cross-agent
+delivery stubs are **not** collapsed under Claude Code — each re-read returns
+the (compressed) content again. Cold-read compression is unaffected.
+
+`LEAN_CTX_SCOPE=<name>` opts back in for an integration that can guarantee one
+agent per lean-ctx process (e.g. a headless loop that never spawns
+sub-agents). Do **not** set it for interactive Claude Code sessions that use
+sub-agents: every sub-agent would inherit the same scope and could receive a
+back-reference to content it never saw.
+
 ### Win vs. break-even at a glance
 
 Three independent levers decide the outcome. The savings stack when they line
