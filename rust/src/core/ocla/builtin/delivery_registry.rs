@@ -18,7 +18,6 @@ use crate::core::ocla::traits::{DeliveryRegistry, OclaService};
 use crate::core::ocla::types::{
     DeliveryEntry, DeliveryRecord, DeliveryStats, OclaCapability, OclaCapabilityKind,
 };
-use crate::core::ocla_bus::{self, OclaEvent};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct DeliveryKey {
@@ -254,12 +253,6 @@ impl DeliveryRegistry for BuiltinDeliveryRegistry {
         self.tokens_saved
             .fetch_add(estimated_tokens, Ordering::Relaxed);
 
-        ocla_bus::emit(OclaEvent::CrossAgentStubServed {
-            path: record.path.clone(),
-            tokens_saved: estimated_tokens,
-            serving_agent: record.agent_id.clone(),
-            original_agent: record.agent_id.clone(),
-        });
         if record.relay_content.is_some() {
             self.relay_served.fetch_add(1, Ordering::Relaxed);
             self.relay_tokens_saved

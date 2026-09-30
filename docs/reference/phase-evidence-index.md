@@ -35,7 +35,7 @@ the Cargo commands) to re-verify the current checkout.
 | E10 | Quality Lab Production | v3.8.x | quality lab e2e | docs/reference/22-code-health.md |
 | E11 | Trait Adoption Strangler | v3.8.x | trait migration tests | docs/contracts/pillar-boundaries-v1.md |
 | E12 | Envelope Completion | v3.9.x | `ocla_wire_*` | docs/contracts/ocla-wire-v1.schema.json |
-| E13 | Context Kernel Enforce | v3.9.x | `enforce_*`, `ocla_bus_*` | docs/contracts/conformance-v1.md |
+| E13 | Context Kernel Enforce | v3.9.x | `enforce_*` | docs/contracts/conformance-v1.md |
 | E14 | Unified Ledger Phase 3 | v3.9.x | `ledger_*` | docs/reference/16-signed-savings-ledger.md |
 | E15 | Policy PDP/PEP | v3.9.x | `policy_*` | docs/contracts/context-policy-packs-v1.md |
 | E16 | A2A Remote + Agent Fabric | v3.9.x | `agent_fabric_*` | docs/contracts/a2a-contract-v1.md |

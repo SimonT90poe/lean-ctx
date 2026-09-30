@@ -6,7 +6,6 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use super::types::{OclaError, OclaResult};
-use crate::core::ocla_bus::{self, OclaEvent};
 
 static NEXT_FORK_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_SNAPSHOT_ID: AtomicU64 = AtomicU64::new(1);
@@ -248,11 +247,6 @@ impl CapsuleStore {
         entry.parent_ref = None;
         entry.data = snapshot.content;
         entry.deltas.clear();
-        ocla_bus::emit(OclaEvent::AgentChainEvent {
-            agent_id: capsule_ref.to_string(),
-            action: "capsule_rollback".to_string(),
-            parent_agent: Some(snapshot_id.to_string()),
-        });
         Ok(())
     }
 

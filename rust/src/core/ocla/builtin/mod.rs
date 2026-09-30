@@ -2,7 +2,7 @@
 //!
 //! Each module wraps existing lean-ctx modules behind the canonical OCLA trait
 //! interface defined in `core::ocla::traits`. The trait boundary enables future
-//! swapping, testing, mocking, and adoption tracking via OclaBus events.
+//! swapping, testing, and mocking.
 
 pub mod agent_gateway;
 pub mod compression_provider;

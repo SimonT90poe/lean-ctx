@@ -177,37 +177,6 @@ fn append_provider_block(
     }
 }
 
-/// Emit a plan-created event on the OclaBus.
-pub fn emit_plan_event(plan: &ContextPlanV1) {
-    use crate::core::ocla_bus::{self, OclaEvent};
-
-    ocla_bus::emit(OclaEvent::AgentChainEvent {
-        agent_id: format!("kernel:{}", plan.plan_id),
-        action: format!(
-            "plan_created:selected={},excluded={},budget={}/{}",
-            plan.selected.len(),
-            plan.excluded.len(),
-            plan.budget.used_tokens,
-            plan.budget.total_tokens,
-        ),
-        parent_agent: None,
-    });
-}
-
-/// Emit a receipt-recorded event on the OclaBus.
-pub fn emit_receipt_event(receipt: &ContextReceiptV1) {
-    use crate::core::ocla_bus::{self, OclaEvent};
-
-    ocla_bus::emit(OclaEvent::AgentChainEvent {
-        agent_id: format!("kernel:{}", receipt.receipt_id),
-        action: format!(
-            "receipt_recorded:tokens={},outcome={:?}",
-            receipt.delivered_tokens, receipt.outcome,
-        ),
-        parent_agent: Some(receipt.plan_id.clone()),
-    });
-}
-
 /// Update the bandit-learned FieldWeights based on a receipt outcome.
 ///
 /// Accepted outcomes reinforce the balanced arm, rejected outcomes penalize

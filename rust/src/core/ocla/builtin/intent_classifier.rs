@@ -1,14 +1,13 @@
 //! BuiltinIntentClassifier — classifies request intent from candidates.
 //!
-//! Wraps `core/intent_engine.rs` behind the OCLA trait. Emits IntentClassified
-//! events to OclaBus. Selects the highest-confidence intent from candidates.
+//! Wraps `core/intent_engine.rs` behind the OCLA trait. Selects the
+//! highest-confidence intent from candidates.
 
 use crate::core::intent_engine;
 use crate::core::ocla::traits::{IntentClassifier, OclaService};
 use crate::core::ocla::types::{
     IntentDecision, IntentRequest, OclaCapability, OclaCapabilityKind, OclaResult,
 };
-use crate::core::ocla_bus::{self, OclaEvent};
 
 pub struct BuiltinIntentClassifier;
 
@@ -41,12 +40,6 @@ impl IntentClassifier for BuiltinIntentClassifier {
                 || fallback_decision(&request.candidate_intents),
                 |(candidate, score)| (candidate.clone(), confidence_milli(score)),
             );
-
-        ocla_bus::emit(OclaEvent::IntentClassified {
-            tier: intent.clone(),
-            confidence: f64::from(confidence) / 1000.0,
-            reasoning: format!("builtin:{}", request.context.request_id),
-        });
 
         Ok(IntentDecision {
             intent,
