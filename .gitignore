@@ -107,8 +107,3 @@ _archive/bench/lifecycle/.cache/
 .sprint-poc/
 
 .pytest_cache/
-
-
-# Added by cargo
-
-/target
