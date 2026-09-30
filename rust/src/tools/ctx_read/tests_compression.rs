@@ -38,6 +38,19 @@ fn compressed_cache_key_distinguishes_task() {
     assert_ne!(density_a, density_b, "density key must vary with task");
 }
 
+/// #1910: an explicit request's raw fallback carries a banner, an `auto` one
+/// does not — both resolve to the same mode, so the key must tell them apart.
+/// Explicit keys stay byte-identical to their pre-#1910 form.
+#[test]
+fn request_scoped_key_separates_auto_from_explicit() {
+    let base = compressed_cache_key("cognitive", CrpMode::Off, None, None, &[]);
+    let explicit = request_scoped_key(base.clone(), false);
+    let auto = request_scoped_key(base.clone(), true);
+    assert_eq!(explicit, base);
+    assert_ne!(auto, explicit);
+    assert_eq!(auto, request_scoped_key(base, true), "deterministic (#498)");
+}
+
 #[test]
 fn compressed_cache_key_distinguishes_aggressiveness() {
     // None → byte-identical to today's keys (#714 must not shift existing cache).
@@ -138,6 +151,63 @@ fn aggressiveness_is_deterministic_and_monotonic() {
     );
 
     crate::test_env::remove_var("LEAN_CTX_SHOW_SAVINGS");
+}
+
+/// #1911: `entropy` on real source used to save 0% (the absolute H/surprise
+/// cut kept every line of a typical Rust file) and `aggressiveness` did not
+/// move it. The file-relative surprise floor must shed real tokens at the
+/// default and strictly more as aggressiveness rises — without ever falling
+/// back to the "no compression applied" path.
+#[test]
+fn entropy_saves_on_real_source_and_scales_with_aggressiveness() {
+    let _lock = crate::core::data_dir::test_env_lock();
+    crate::test_env::set_var("LEAN_CTX_SHOW_SAVINGS", "0");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core/compressor.rs");
+    let content = std::fs::read_to_string(&path).unwrap();
+    let raw = count_tokens(&content);
+    let render_at = |a: Option<f64>| -> String {
+        process_mode_tuned(
+            &content,
+            "entropy",
+            "F1",
+            "compressor.rs",
+            "rs",
+            raw,
+            CrpMode::Off,
+            "src/core/compressor.rs",
+            None,
+            ReadTuning {
+                aggressiveness: a,
+                protect: &[],
+            },
+        )
+        .0
+    };
+    let default = render_at(None);
+    // The default threshold is file-adaptive (per-language base plus the
+    // content's compressibility), not a point on the aggressiveness scale;
+    // monotonicity is checked on explicit levels only.
+    let low = count_tokens(&render_at(Some(0.1)));
+    let mid = count_tokens(&render_at(Some(0.5)));
+    let high = count_tokens(&render_at(Some(0.9)));
+    let default_tokens = count_tokens(&default);
+    let again = render_at(None);
+    crate::test_env::remove_var("LEAN_CTX_SHOW_SAVINGS");
+
+    assert_eq!(default, again, "entropy output must be deterministic");
+    assert!(
+        !default.starts_with("[lean-ctx] no compression applied"),
+        "entropy fell back on compressor.rs"
+    );
+    assert!(
+        default_tokens * 100 <= raw * 95,
+        "entropy default saves <5%: {default_tokens} of {raw} tok"
+    );
+    assert!(low <= raw, "a=0.1 inflates: {low} > {raw}");
+    assert!(
+        high < mid && mid <= low,
+        "not monotonic: a0.1={low} a0.5={mid} a0.9={high}"
+    );
 }
 
 #[test]

@@ -2,6 +2,7 @@
 //! keep that file under the LOC gate's 1500-line cap (#660).
 
 use super::*;
+use serde_json::json;
 
 /// #696: `repo=<alias>` must resolve `path` against *that* repo's root,
 /// jailed there — and because the cache key is the resolved absolute

@@ -131,6 +131,103 @@ fn auto_read_never_inflates_small_file() {
     );
 }
 
+/// Real files of every size class and type (#1910 acceptance): code around
+/// the 500–700-token `science_cognitive_small` band, mid-size and over the
+/// turn budget, plus prose and Python/TypeScript.
+const AUTO_CORPUS: &[&str] = &[
+    "src/core/error.rs",
+    "src/core/surprise.rs",
+    "src/core/compressor.rs",
+    "src/core/entropy.rs",
+    "src/tools/ctx_read/render.rs",
+    "../VISION.md",
+    "../README.md",
+    "../integrations/hermes-lean-ctx/__init__.py",
+    "../packages/vscode-lean-ctx/src/extension.ts",
+];
+
+/// #1910 property: whatever `auto` resolves to — including a mode that cannot
+/// shrink the file and falls back — a cold `auto` read never costs more than
+/// the raw file.
+#[test]
+fn auto_read_never_exceeds_raw_on_corpus() {
+    let _iso = crate::core::data_dir::isolated_data_dir();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut checked = 0;
+    for rel in AUTO_CORPUS {
+        let Ok(content) = std::fs::read_to_string(root.join(rel)) else {
+            continue;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let name = rel.rsplit('/').next().unwrap();
+        let path = dir.path().join(name);
+        std::fs::write(&path, &content).unwrap();
+        let p = path.to_string_lossy().to_string();
+
+        let mut cache = SessionCache::new();
+        let out = handle_with_task_resolved(&mut cache, &p, "auto", CrpMode::Off, None);
+        let raw = count_tokens(&content);
+        assert!(
+            out.output_tokens <= raw,
+            "{rel}: auto ({}) {} tok > raw {raw} tok",
+            out.resolved_mode,
+            out.output_tokens
+        );
+        assert!(
+            !out.content.contains("no compression applied"),
+            "{rel}: auto must not announce its own fallback"
+        );
+        checked += 1;
+    }
+    assert!(checked >= 5, "corpus mostly missing ({checked} files read)");
+}
+
+/// #1910: `auto` picking `cognitive` for a ~600-token file used to return
+/// banner + file (> raw). Under the auto guard the fallback is the bare file;
+/// an explicit request for the same mode still gets the banner.
+#[test]
+fn auto_cognitive_fallback_is_bare_file() {
+    let _lock = crate::core::data_dir::test_env_lock();
+    crate::test_env::set_var("LEAN_CTX_SHOW_SAVINGS", "0");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    // A small real source file; `core/error.rs` is used crate-wide, so it
+    // will not disappear the way the original fixture did in #1915.
+    let content = std::fs::read_to_string(root.join("src/core/error.rs")).unwrap();
+    let raw = count_tokens(&content);
+    let render = || {
+        process_mode_tuned(
+            &content,
+            "cognitive",
+            "F1",
+            "error.rs",
+            "rs",
+            raw,
+            CrpMode::Off,
+            "src/core/error.rs",
+            None,
+            ReadTuning::default(),
+        )
+        .0
+    };
+    let auto = {
+        let _auto = super::render::AutoRequestGuard::new();
+        render()
+    };
+    let explicit = render();
+    crate::test_env::remove_var("LEAN_CTX_SHOW_SAVINGS");
+
+    assert!(
+        count_tokens(&auto) <= raw,
+        "auto: {} > {raw}",
+        count_tokens(&auto)
+    );
+    assert!(!auto.contains("no compression applied"), "{auto}");
+    // Only the explicit-request banner may push a fallback above raw.
+    if count_tokens(&explicit) > raw {
+        assert!(explicit.contains("no compression applied"), "{explicit}");
+    }
+}
+
 #[test]
 fn cognitive_read_never_inflates_small_tier_file() {
     // #1914: `auto` routes 500-2000-token code to `cognitive`, whose raw

@@ -8,29 +8,12 @@ use super::{
 };
 use crate::core::aggressiveness::AggressivenessProfile;
 
+#[cfg(test)]
+pub(crate) use super::fallback_banner::NO_COMPRESSION_BANNER_MIN_TOKENS;
+pub(crate) use super::fallback_banner::{AutoRequestGuard, no_compression_banner};
+
 fn monotonic_check(original: usize, compressed: usize) -> bool {
     compressed < original
-}
-
-/// Below this many raw tokens a silent full-content fallback is not worth a
-/// banner: the file is small enough that the framing itself was the expensive
-/// part (which is exactly what the #361 cap exists to strip), and a banner
-/// would push the read back above the raw file it just protected. Above it, the
-/// caller is being handed a whole file they did not order and must be told.
-pub(crate) const NO_COMPRESSION_BANNER_MIN_TOKENS: usize = 400;
-
-/// One-line notice that a compression path gave up and returned the untouched
-/// file. Without it the caller pays full-file tokens believing a summary was
-/// delivered — the failure is invisible in the output and surfaces only on the
-/// bill. `None` for files below [`NO_COMPRESSION_BANNER_MIN_TOKENS`], where the
-/// fallback is the cap working as designed rather than a degradation.
-pub(crate) fn no_compression_banner(requested_mode: &str, raw_tokens: usize) -> Option<String> {
-    (raw_tokens >= NO_COMPRESSION_BANNER_MIN_TOKENS).then(|| {
-        format!(
-            "[lean-ctx] no compression applied (mode={requested_mode}): \
-             output was not smaller than the file — returning full content ({raw_tokens} tok)"
-        )
-    })
 }
 
 fn raw_fallback(
@@ -710,19 +693,6 @@ mod render_tests {
             assert!(out.contains(mode), "warning must list `{mode}`: {out}");
         }
     }
-
-    /// #1587: a compression request that degrades to the whole file says so.
-    /// Below the threshold it stays silent, so the #361 cap still guarantees a
-    /// read never costs more than the raw file.
-    #[test]
-    fn no_compression_banner_only_above_threshold() {
-        assert!(super::no_compression_banner("signatures", 10).is_none());
-        let banner =
-            super::no_compression_banner("signatures", super::NO_COMPRESSION_BANNER_MIN_TOKENS)
-                .expect("a whole file handed back instead of a summary must be announced");
-        assert!(banner.contains("no compression applied"), "{banner}");
-        assert!(banner.contains("mode=signatures"), "{banner}");
-    }
 }
 
 /// Shared, `Copy` bundle of the per-call rendering context threaded to the
@@ -1256,7 +1226,7 @@ fn render_entropy(content: &str, ctx: RenderCtx<'_>, tuning: &ReadTuning<'_>) ->
         })
         .unwrap_or_default();
     let result = match (task_kws.is_empty(), tuning.aggressiveness) {
-        // Aggressiveness overrides the learned BPE-entropy threshold for
+        // Aggressiveness overrides the file-adaptive BPE-entropy threshold for
         // the plain (no task keywords) path; task-conditioned entropy
         // keeps its own relevance-aware thresholds.
         (true, Some(a)) => entropy::entropy_compress_with_threshold(

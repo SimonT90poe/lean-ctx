@@ -303,12 +303,7 @@ pub fn adaptive_thresholds(path: &str, content: &str) -> CompressionThresholds {
     base.bpe_entropy =
         (base.bpe_entropy + super::threshold_learning::learned_delta(ext)).clamp(0.4, 2.0);
 
-    if content.len() > 500 {
-        let k = kolmogorov_proxy(content);
-        let k_adjustment = (k - 0.45) * 0.5;
-        base.bpe_entropy = (base.bpe_entropy + k_adjustment).clamp(0.4, 2.0);
-        base.jaccard = (base.jaccard - k_adjustment * 0.3).clamp(0.5, 0.85);
-    }
+    apply_content_compressibility(&mut base, content);
 
     if let Some(project_root) =
         crate::core::session::SessionState::load_latest().and_then(|s| s.project_root)
@@ -328,6 +323,34 @@ pub fn adaptive_thresholds(path: &str, content: &str) -> CompressionThresholds {
         record_selected_arm(path, project_root, bandit_key, arm_name);
     }
 
+    base
+}
+
+/// Shift the thresholds by the content's own compressibility (Kolmogorov
+/// proxy): a pure function of the text.
+fn apply_content_compressibility(base: &mut CompressionThresholds, content: &str) {
+    if content.len() > 500 {
+        let k = kolmogorov_proxy(content);
+        let k_adjustment = (k - 0.45) * 0.5;
+        base.bpe_entropy = (base.bpe_entropy + k_adjustment).clamp(0.4, 2.0);
+        base.jaccard = (base.jaccard - k_adjustment * 0.3).clamp(0.5, 0.85);
+    }
+}
+
+/// Thresholds for rendering a read: the per-language base adjusted by the
+/// content's compressibility, so the rendered text is a pure function of
+/// `(path, content)` (#498).
+///
+/// The learned blend in [`adaptive_thresholds`] — feedback store, threshold
+/// learner, bandit arm — moves between calls. Since #1910 the entropy
+/// threshold decides which lines survive, so two reads of one file could
+/// differ and bust provider prompt caches. The arm is still selected here, so
+/// the Phi field weights it sets keep working; only the text ignores the
+/// learned values.
+pub fn read_thresholds(path: &str, content: &str) -> CompressionThresholds {
+    let _learned = adaptive_thresholds(path, content);
+    let mut base = thresholds_for_path(path);
+    apply_content_compressibility(&mut base, content);
     base
 }
 

@@ -39,6 +39,8 @@ pub(super) fn handle_with_options_inner(
     } else {
         mode
     };
+    // #1910: a fallback inside an `auto` read returns the bare file, bannerless.
+    let _auto_guard = (mode == "auto").then(super::render::AutoRequestGuard::new);
 
     if fresh {
         if mode == "diff" {
@@ -151,12 +153,15 @@ pub(super) fn handle_with_options_inner(
         }
 
         let compressed_hit = if is_cacheable_mode(&resolved_mode) {
-            let cache_key = compressed_cache_key(
-                &resolved_mode,
-                crp_mode,
-                task,
-                tuning.aggressiveness,
-                tuning.protect,
+            let cache_key = super::request_scoped_key(
+                compressed_cache_key(
+                    &resolved_mode,
+                    crp_mode,
+                    task,
+                    tuning.aggressiveness,
+                    tuning.protect,
+                ),
+                mode == "auto",
             );
             // #1287: a same-conversation re-read of the SAME variant of an
             // unchanged file collapses to the ~15-token variant stub instead
@@ -246,12 +251,15 @@ pub(super) fn handle_with_options_inner(
                 out
             };
             if is_cacheable_mode(&resolved_mode) {
-                let cache_key = compressed_cache_key(
-                    &resolved_mode,
-                    crp_mode,
-                    task,
-                    tuning.aggressiveness,
-                    tuning.protect,
+                let cache_key = super::request_scoped_key(
+                    compressed_cache_key(
+                        &resolved_mode,
+                        crp_mode,
+                        task,
+                        tuning.aggressiveness,
+                        tuning.protect,
+                    ),
+                    mode == "auto",
                 );
                 cache.set_compressed(path, &cache_key, out.clone());
             }
@@ -402,12 +410,15 @@ pub(super) fn handle_with_options_inner(
         output
     };
     if is_cacheable_mode(&resolved_mode) {
-        let cache_key = compressed_cache_key(
-            &resolved_mode,
-            crp_mode,
-            task,
-            tuning.aggressiveness,
-            tuning.protect,
+        let cache_key = super::request_scoped_key(
+            compressed_cache_key(
+                &resolved_mode,
+                crp_mode,
+                task,
+                tuning.aggressiveness,
+                tuning.protect,
+            ),
+            mode == "auto",
         );
         cache.set_compressed(path, &cache_key, output.clone());
     }

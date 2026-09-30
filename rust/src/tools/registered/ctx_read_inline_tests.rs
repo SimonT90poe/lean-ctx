@@ -1,5 +1,6 @@
 //! Inline tests extracted from ctx_read.rs (#660 LOC gate).
 use super::*;
+use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn engine_test_context(root: &std::path::Path, path: &std::path::Path) -> ToolContext {

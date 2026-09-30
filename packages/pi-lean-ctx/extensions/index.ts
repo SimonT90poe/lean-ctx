@@ -85,7 +85,7 @@ const readModeSchema = Type.Union([
   Type.Literal("reference"),
   Type.Literal("task"),
   Type.String({ description: "lines:N-M window (e.g. lines:5-20)" }),
-], { description: "Override auto-selection: full=verbatim anchored=full+anchors(edit via ctx_patch) diff=git-delta map=structure signatures=API raw=exact-bytes lines:N-M=window auto=smart(default)" });
+], { description: "Override auto-selection: full=complete(≤turn budget; raw=true beyond) anchored=full+anchors(edit via ctx_patch) diff=git-delta map=structure signatures=API raw=exact-bytes lines:N-M=window auto=smart(default)" });
 
 // Kept field-compatible with the canonical MCP `ctx_read` schema (registry in
 // rust/src/tools/registered/ctx_read.rs) so the tool looks identical across

@@ -95,6 +95,20 @@ pub(crate) fn compressed_cache_key(
     key
 }
 
+/// Scopes a [`compressed_cache_key`] to the request kind (#1910). An explicit
+/// request that falls back to the raw file carries a no-compression banner; the
+/// same fallback inside an `auto` read is bannerless. Both resolve to the same
+/// concrete mode, so without this suffix one variant would be served for the
+/// other and output would depend on read order (#498). Explicit keys stay
+/// byte-identical to their pre-#1910 form.
+pub(crate) fn request_scoped_key(key: String, auto_request: bool) -> String {
+    if auto_request {
+        format!("{key}:auto")
+    } else {
+        key
+    }
+}
+
 /// Appends the reactive recovery footer to a compressed view, leading with the
 /// MCP-free "read the path directly" route. Tier (`off|minimal|full`) and wording
 /// are resolved centrally in [`crate::core::recovery`] so `ctx_read`, the shell

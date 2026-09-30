@@ -96,6 +96,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   whole marker lines count as blocks, and a strip removes the solution block
   together with the lean-ctx block.
 
+### Fixed — `ctx_read` compression never costs more than the raw file (#1910, #1911)
+
+- `entropy` mode now compresses real source. It used to keep every line of a
+  typical Rust file, and `aggressiveness` had no effect. Lines are now dropped
+  against a file-relative surprise floor, so the default saves roughly 10–35%
+  and higher `aggressiveness` drops strictly more.
+- An `auto` read that resolves to a mode unable to shrink the file now returns
+  the bare file, never banner + file. Such reads used to cost more than raw on
+  ~600-token files. Explicit mode requests keep the "no compression applied"
+  banner. When the file exceeds the per-turn budget, the banner now says the
+  content is truncated and names `raw=true`.
+- `auto` and explicit reads of the same mode no longer share a cache entry, so
+  a banner-free fallback is never replayed to an explicit request, or the other
+  way round.
+- `html_` CCR handles from the proxy now resolve in `ctx_expand`.
+- `map` exports keep nested Rust generics intact.
+- The edit-quality penalty now escalates a mode with repeated edit failures
+  straight to `full`, as documented. It no longer steps down to a lossier
+  `signatures` or `map` view.
+- `entropy` reads are deterministic. Once `entropy` actually dropped lines,
+  two things made two reads of the same file differ, which defeats provider
+  prompt caching:
+  - the semantic line filter ran only while the embedding model happened to
+    be loaded;
+  - the learned thresholds (feedback, quality learner, bandit arm) shift
+    between calls.
+
+  Reads now use the per-language threshold adjusted by the file's own
+  compressibility, plus `aggressiveness`. The semantic filter is off for
+  reads.
+
 ### Fixed — quality claims match what the gates can show (#1905)
 
 - `lean-ctx eval ab` reports now print `POWER: underpowered` when a run has

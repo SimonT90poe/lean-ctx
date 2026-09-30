@@ -15,6 +15,7 @@ pub mod dedup_hook;
 mod helpers;
 use helpers::{detect_project_root, find_similar_and_update_semantic_index};
 pub use helpers::{graph_related_hint, is_instruction_file};
+mod fallback_banner;
 mod kernel;
 pub(crate) mod render;
 pub(crate) use render::*;

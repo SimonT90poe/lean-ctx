@@ -256,7 +256,7 @@ pub fn entropy_compress_adaptive(
     path: &str,
     force_keep: &[String],
 ) -> EntropyResult {
-    let thresholds = super::adaptive_thresholds::adaptive_thresholds(path, content);
+    let thresholds = super::adaptive_thresholds::read_thresholds(path, content);
     let before_lines = content.lines().count() as u32;
     let result = entropy_compress_with_thresholds(
         content,
@@ -280,7 +280,7 @@ pub fn entropy_compress_adaptive(
     result
 }
 
-/// Like [`entropy_compress_adaptive`] but overrides the learned BPE-entropy
+/// Like [`entropy_compress_adaptive`] but overrides the file-adaptive BPE-entropy
 /// threshold (e.g. from the aggressiveness knob) while keeping the file-adaptive
 /// jaccard. Pure function of its inputs (#498). Higher `bpe_entropy` drops more
 /// low-information lines.
@@ -290,7 +290,7 @@ pub fn entropy_compress_with_threshold(
     bpe_entropy: f64,
     force_keep: &[String],
 ) -> EntropyResult {
-    let thresholds = super::adaptive_thresholds::adaptive_thresholds(path, content);
+    let thresholds = super::adaptive_thresholds::read_thresholds(path, content);
     entropy_compress_with_thresholds(content, bpe_entropy, thresholds.jaccard, force_keep)
 }
 
@@ -305,7 +305,7 @@ pub fn entropy_compress_task_conditioned(
     task_keywords: &[String],
     force_keep: &[String],
 ) -> EntropyResult {
-    let thresholds = super::adaptive_thresholds::adaptive_thresholds(path, content);
+    let thresholds = super::adaptive_thresholds::read_thresholds(path, content);
     let before_lines = content.lines().count() as u32;
     let result = entropy_compress_with_task(
         content,
@@ -379,6 +379,11 @@ fn line_embedder(_line_count: usize) -> impl Fn(&str) -> Option<Vec<f32>> {
     |_: &str| None
 }
 
+/// Read-path entropy compression. The semantic redundancy filter (#544) is
+/// off here: it ran only while the embedding model happened to be loaded, so
+/// two reads of the same file could return different text — which breaks the
+/// output-determinism contract (#498) and, since #1910 made `entropy` drop
+/// lines at all, showed up as `read_mode_deterministic:entropy` failing.
 fn entropy_compress_with_task(
     content: &str,
     entropy_threshold: f64,
@@ -391,7 +396,7 @@ fn entropy_compress_with_task(
         entropy_threshold,
         jaccard_threshold,
         task_keywords,
-        true,
+        false,
         force_keep,
     )
 }
@@ -419,6 +424,9 @@ fn entropy_compress_inner(
     // the size cutoff, which never resolves an engine.
     let embed = line_embedder(if semantic { original_count } else { usize::MAX });
     let mut scoring_ctx = super::surprise::ScoringCtx::new();
+    // #1910: the threshold sets how much of *this* file is shed (most
+    // predictable lines first), so it — and aggressiveness — take effect.
+    let floor = super::surprise::surprise_floor(lines.iter().copied(), entropy_threshold);
     lines.retain(|line| {
         let trimmed = line.trim();
         // Explicit protect tokens (#709) win over every lossy heuristic: a line
@@ -426,15 +434,10 @@ fn entropy_compress_inner(
         if super::protect::line_is_protected(line, force_keep) {
             return true;
         }
-        if super::surprise::should_keep_line_semantic(
-            trimmed,
-            entropy_threshold,
-            &embed,
-            &mut scoring_ctx,
-        ) {
+        if super::surprise::should_keep_line_semantic(trimmed, floor, &embed, &mut scoring_ctx) {
             return true;
         }
-        // Task-conditioned rescue: keep low-entropy lines that mention task keywords.
+        // Task-conditioned rescue: keep predictable lines that mention task keywords.
         if !kw_lower.is_empty() {
             let lower = trimmed.to_lowercase();
             if kw_lower.iter().any(|kw| lower.contains(kw.as_str())) {
@@ -446,7 +449,7 @@ fn entropy_compress_inner(
     });
     let removed = original_count - lines.len();
     if removed > 0 || task_rescued > 0 {
-        let mut msg = format!("⊘ {removed} low-entropy lines (BPE H<{entropy_threshold:.2})");
+        let mut msg = format!("⊘ {removed} predictable lines");
         if task_rescued > 0 {
             msg.push_str(&format!(" [+{task_rescued} task-rescued]"));
         }

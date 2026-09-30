@@ -393,17 +393,6 @@ pub(crate) fn is_risky_mode(path: &str, mode: &str) -> bool {
     global().lock().is_ok_and(|s| s.is_risky(&ext, mode))
 }
 
-/// Returns true if any mode is risky for this file extension (edit quality).
-/// Used to skip cognitive mode for files with known compression failures.
-pub(crate) fn has_any_penalty(path: &str) -> bool {
-    let ext = ext_of(path);
-    global().lock().is_ok_and(|s| {
-        s.pairs
-            .iter()
-            .any(|(k, v)| k.starts_with(&format!("{ext}|")) && v.risky)
-    })
-}
-
 /// Snapshot for `ctx_metrics`: (risky pairs, per-pair stats, escalations served).
 pub(crate) fn metrics_snapshot() -> serde_json::Value {
     let Ok(store) = global().lock() else {

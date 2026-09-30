@@ -152,21 +152,19 @@ fn extract_rust_deps(content: &str) -> DepInfo {
             }
         }
 
-        if trimmed.starts_with("pub fn ") || trimmed.starts_with("pub async fn ") {
-            if let Some(name) = trimmed
-                .split('(')
-                .next()
-                .and_then(|s| s.split_whitespace().last())
-            {
+        // #1911: cut at the first non-identifier char, so generics and
+        // lifetimes (`Foo<'a>`, `bar<T: X>(`) never leak into the export name.
+        let item = trimmed
+            .strip_prefix("pub fn ")
+            .or_else(|| trimmed.strip_prefix("pub async fn "))
+            .or_else(|| trimmed.strip_prefix("pub struct "))
+            .or_else(|| trimmed.strip_prefix("pub enum "))
+            .or_else(|| trimmed.strip_prefix("pub trait "));
+        if let Some(rest) = item {
+            let name = leading_identifier(rest.trim_start());
+            if !name.is_empty() {
                 exports.push(name.to_string());
             }
-        } else if (trimmed.starts_with("pub struct ")
-            || trimmed.starts_with("pub enum ")
-            || trimmed.starts_with("pub trait "))
-            && let Some(name) = trimmed.split_whitespace().nth(2)
-        {
-            let clean = name.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_');
-            exports.push(clean.to_string());
         }
     }
 
@@ -174,6 +172,16 @@ fn extract_rust_deps(content: &str) -> DepInfo {
         imports: imports.into_iter().collect(),
         exports,
     }
+}
+
+/// The identifier `s` starts with (raw `r#ident` kept whole), up to the first
+/// char that cannot continue it — `<`, `(`, `:`, `{`, whitespace, ….
+fn leading_identifier(s: &str) -> &str {
+    let body_start = if s.starts_with("r#") { 2 } else { 0 };
+    let end = s[body_start..]
+        .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .map_or(s.len(), |i| body_start + i);
+    if end == body_start { "" } else { &s[..end] }
 }
 
 fn extract_python_deps(content: &str) -> DepInfo {
@@ -419,6 +427,42 @@ fn extract_export_name(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1911: generics and lifetimes are cut off the export name.
+    #[test]
+    fn rust_exports_strip_generics_and_lifetimes() {
+        let src = "pub struct AutoModeContext<'a> {\n\
+                   pub enum Bar<T: Clone> { A(T) }\n\
+                   pub trait Baz<T>: Sized {}\n\
+                   pub struct Unit;\n\
+                   pub struct Tuple(u8);\n\
+                   pub fn generic<T: Into<String>>(t: T) {}\n\
+                   pub async fn run(x: u8) {}\n\
+                   pub fn r#type() {}\n";
+        let deps = extract_deps(src, "rs");
+        assert_eq!(
+            deps.exports,
+            [
+                "AutoModeContext",
+                "Bar",
+                "Baz",
+                "Unit",
+                "Tuple",
+                "generic",
+                "run",
+                "r#type"
+            ]
+        );
+    }
+
+    #[test]
+    fn leading_identifier_edge_cases() {
+        assert_eq!(leading_identifier("Foo<'a>"), "Foo");
+        assert_eq!(leading_identifier("r#match("), "r#match");
+        assert_eq!(leading_identifier("<T>"), "");
+        assert_eq!(leading_identifier("r#"), "");
+        assert_eq!(leading_identifier("naïve_ß()"), "naïve_ß");
+    }
 
     #[test]
     fn c_include_relative_is_extracted() {

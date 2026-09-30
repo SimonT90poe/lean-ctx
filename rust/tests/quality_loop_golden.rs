@@ -84,16 +84,14 @@ fn edit_fail_after_map_read_escalates_and_penalizes() {
         cache: None,
     };
     let penalized = resolve(&other_ctx);
-    // With science features enabled, cognitive mode takes priority over the
-    // edit_quality_fallback path for code files > 500 tokens. Both outcomes
-    // are correct — cognitive (science-driven) or signatures (fallback).
-    assert!(
-        penalized.mode == "signatures" || penalized.mode == "cognitive",
-        "expected signatures or cognitive, got: {}",
-        penalized.mode
-    );
-    if penalized.mode == "signatures" {
-        assert_eq!(penalized.source, "edit_quality_fallback");
+    // #1911: the penalty only ever escalates toward `full` — never to another
+    // body-less view. With science features on, the unpenalized choice is
+    // `cognitive` (not the risky mode) and stays; otherwise the risky `map`
+    // becomes `full`.
+    match penalized.mode.as_str() {
+        "full" => assert_eq!(penalized.source, "edit_quality_penalty"),
+        "cognitive" => {}
+        other => panic!("penalty must not serve a lossier mode, got: {other}"),
     }
 
     // Successful edits on the failing pair recover it (hysteresis: rate
@@ -110,4 +108,23 @@ fn edit_fail_after_map_read_escalates_and_penalizes() {
         recovered.source, "edit_quality_penalty",
         "12 successes must clear the risky flag (2/14 < 0.15)"
     );
+
+    // #1911: whichever mode auto picks for this file (science `cognitive` or
+    // heuristic `map`), once that mode is risky the answer is `full` — never a
+    // fallback to `map`/`signatures`. rs|cognitive: 2/2 fails; rs|map:
+    // 4/16 = 0.25 re-enters risky. The successes above left `fn replaced() {}`
+    // in the file, so these misses need a new_string that is not there —
+    // otherwise ctx_edit reports "already applied" and records no failure.
+    let mut miss = params_for(&path, "fn imagined_from_compressed_view()");
+    miss.new_string = "fn never_written() {}".to_string();
+    for mode in ["cognitive", "cognitive", "map", "map"] {
+        let (t, e) = run_io(&miss, mode);
+        assert!(t.contains("old_string not found"), "got: {t}");
+        record_outcome(&miss, mode, &t, &e);
+    }
+    // Drain the one-shot escalation those failures queued for `golden.rs`.
+    let _ = resolve(&ctx);
+    let both_risky = resolve(&other_ctx);
+    assert_eq!(both_risky.mode, "full", "got: {}", both_risky.mode);
+    assert_eq!(both_risky.source, "edit_quality_penalty");
 }
