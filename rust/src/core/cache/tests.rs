@@ -466,8 +466,8 @@ fn compressed_variant_tracks_delivered_conversation() {
     );
     cache.set_compressed("/test.rs", "signatures", "sig view".to_string());
     // Present variant: either a concrete conversation (agent environments) or
-    // UnknownConversation (no resolvable id — stub must not be served, never
-    // "stub allowed"). Absent would mean the store was lost.
+    // UnknownConversation (no resolvable id — the conversation gate decides).
+    // Absent would mean the store was lost.
     assert_ne!(
         cache.compressed_delivered_conversation("/test.rs", "signatures"),
         VariantDelivery::Absent,

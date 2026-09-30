@@ -533,12 +533,12 @@ impl CtxReadTool {
                     // agent's own delivery always wins. On a miss, a verified
                     // cross-agent delivery can avoid the disk read below.
                     if !crate::tools::ctx_read::effective_fresh_for_delivery(fresh)
-                        && let Some((hash, mtime)) = delivery_metadata
+                        && let Some(fp) = delivery_metadata
                         && let Some(read_output) = crate::tools::ctx_read::try_cross_agent_stub(
                             &path_owned,
                             &mode,
-                            hash,
-                            mtime,
+                            fp.hash,
+                            fp.mtime,
                         )
                     {
                         let _ = tx.send((
@@ -1113,15 +1113,13 @@ impl CtxReadTool {
         let saved = original.saturating_sub(output_tokens);
 
         if !is_cache_hit {
-            if let Some((hash, mtime)) = delivery_metadata {
-                crate::tools::ctx_read::record_cross_agent_delivery(
+            if let Some(fp) = delivery_metadata {
+                crate::tools::ctx_read::record_read_delivery(
                     path,
-                    hash,
-                    mtime,
-                    0,
+                    fp,
+                    &resolved_mode,
+                    &output,
                     output_tokens,
-                    None,
-                    None,
                 );
             }
         }

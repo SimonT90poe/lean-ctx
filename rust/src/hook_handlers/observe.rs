@@ -231,7 +231,7 @@ fn dedicated_session_context(input: &str) -> Option<String> {
         // tools. Models weight in-conversation context above static instructions.
         Some(
             "lean-ctx active: ALWAYS use ctx_* MCP tools instead of native equivalents.\n\
-             - ctx_read > native Read (cached, unchanged full/auto re-reads ~13 tokens; 10 modes incl. map/signatures)\n\
+             - ctx_read > native Read (cached, 10 modes incl. map/signatures)\n\
              - ctx_search > native Grep (compact results, denied by hook)\n\
              - ctx_shell > native Shell (95+ compression patterns)\n\
              - ctx_glob > native Glob (denied by hook)\n\

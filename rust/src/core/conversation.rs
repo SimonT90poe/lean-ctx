@@ -115,9 +115,11 @@ fn subagent_scope_from(task_id: Option<&str>) -> Option<String> {
 /// 2. `CURSOR_TASK_ID` — Cursor's per-subagent identifier
 /// 3. `CLAUDECODE=1` — per-process scope for Claude Code (#1292). Claude Code
 ///    does not (yet) provide a per-subagent env var, so parent and sub-agent
-///    share the same `session_id`. Each lean-ctx process gets a unique scope
-///    instead, which isolates their caches because each MCP connection is a
-///    separate stdio process.
+///    share the same `session_id`. Sub-agents also reuse the parent's MCP
+///    connection, so a `proc:` scope separates lean-ctx *processes*, not
+///    agents — [`scope_cannot_identify_caller`] therefore withholds every
+///    stub under it (#1801). `LEAN_CTX_SCOPE` is the opt-in for an
+///    integration that can name one agent per process.
 fn resolve_scope(
     cursor_task_id: Option<&str>,
     claudecode: Option<&str>,
@@ -155,9 +157,9 @@ fn process_unique_id() -> &'static str {
 /// Scope sources (first match wins):
 /// - `LEAN_CTX_SCOPE` — explicit override for custom integrations
 /// - `CURSOR_TASK_ID` — Cursor subagents (#952/#956)
-/// - `CLAUDECODE=1` — per-process scope for Claude Code (#1292); each
-///   lean-ctx stdio process gets a unique scope so a sub-agent's process
-///   never inherits the parent's stub deliveries
+/// - `CLAUDECODE=1` — per-process scope for Claude Code (#1292); it keeps
+///   separate lean-ctx processes apart, but sub-agents share their parent's
+///   process, so stubs are withheld under it (#1801)
 ///
 /// Returns `None` only when no agent environment is detected (standalone
 /// usage, plain Cursor without a subagent, etc.), preserving legacy
