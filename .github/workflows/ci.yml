@@ -220,6 +220,20 @@ jobs:
         env:
           LEAN_CTX_PERF_GATE: "1"
         run: |
+          # Quiesce first. These gates used to start after minutes of
+          # recompiling (build.rs was always stale), which doubled as a
+          # cooldown; now they start seconds after the multi-threaded suite,
+          # and the lean-ctx children its tests spawned can still hold the CPU.
+          ps -eo pid,pcpu,etime,args --sort=-pcpu | head -8
+          pkill -f "$PWD/target/" || true
+          for _ in $(seq 60); do
+            read -r _ u1 n1 s1 i1 _ < /proc/stat
+            sleep 1
+            read -r _ u2 n2 s2 i2 _ < /proc/stat
+            busy=$(( (u2 + n2 + s2) - (u1 + n1 + s1) )); idle=$(( i2 - i1 ))
+            (( idle * 10 >= (busy + idle) * 9 )) && break
+          done
+          ps -eo pid,pcpu,etime,args --sort=-pcpu | head -4
           cargo test --all-features --lib -- --test-threads=1 parallel_incremental_rebuild_perf_gate --nocapture
           cargo test --all-features --lib -- --test-threads=1 context_kernel::perf_benchmark
           cargo test --all-features --test main -- --test-threads=1 performance_stress
