@@ -15,6 +15,11 @@
 //! - [`net_cost_decision`] / [`repack_saving_usd`] — the fully priced primitive
 //!   (before/after token counts × `ModelCost`) for callers that already know
 //!   the compressed size (tests today, cache-edit batching later).
+//! - [`system_mutation_decision`] — the warm-prefix gate for compressing the
+//!   `system` prompt while a message prefix is cached (#1912): it prices the
+//!   bust of the whole prefix against the per-turn cache-read saving, with the
+//!   conversation's own turn count as the reuse estimate and current prices
+//!   from the shared table ([`model_cost_for`]).
 //!
 //! Pure functions, no globals; gated behind the opt-in `proxy.cache_policy` at
 //! the call site so a default proxy keeps today's behaviour exactly.
@@ -101,35 +106,27 @@ pub enum MutationDecision {
     Preserve { break_even: u32 },
 }
 
-/// Generalised net-cost gate for **any** frozen-region mutation. Compares the
-/// Look up cost parameters for a model name. Falls back to Sonnet-class pricing.
+/// Cost parameters for a model name, from the shared pricing table (embedded
+/// prices, `[cost.prices]` overrides, live list) so the gate never prices a
+/// request with stale per-family constants (#1912).
 #[must_use]
 pub fn model_cost_for(model: &str) -> ModelCost {
-    let m = model.to_ascii_lowercase();
-    if m.contains("opus") {
-        ModelCost {
-            input_per_m: 15.0,
-            output_per_m: 75.0,
-            cache_write_per_m: 18.75,
-            cache_read_per_m: 1.5,
-        }
-    } else if m.contains("haiku") {
-        ModelCost {
-            input_per_m: 0.25,
-            output_per_m: 1.25,
-            cache_write_per_m: 0.30,
-            cache_read_per_m: 0.03,
-        }
-    } else {
-        ModelCost {
-            input_per_m: 3.0,
-            output_per_m: 15.0,
-            cache_write_per_m: 3.75,
-            cache_read_per_m: 0.30,
-        }
-    }
+    crate::core::gain::model_pricing::ModelPricing::load()
+        .quote(Some(model))
+        .cost
 }
 
+/// Generalised net-cost gate for **any** frozen-region mutation. A frozen
+/// region is served from the prompt cache, so:
+///
+/// - the one-off bust is the mutation turn's re-write of the shrunk prefix in
+///   place of the cache read it would otherwise have been
+///   (`after × cache_write − before × cache_read`, never negative);
+/// - the per-call saving afterwards is the dropped tokens at the *cache-read*
+///   price (they would have been cache reads, not fresh input).
+///
+/// Mutates only when the expected reuse count reaches the break-even point.
+#[must_use]
 pub fn should_mutate_frozen(
     before_tokens: u64,
     after_tokens: u64,
@@ -142,9 +139,10 @@ pub fn should_mutate_frozen(
         };
     }
     let saved_tokens = before_tokens - after_tokens;
-    let bust_cost = (after_tokens as f64 / 1_000_000.0 * cost.cache_write_per_m)
-        + (before_tokens as f64 / 1_000_000.0 * cost.cache_read_per_m);
-    let per_call_saving = saved_tokens as f64 / 1_000_000.0 * cost.input_per_m;
+    let bust_cost = (after_tokens as f64 / 1_000_000.0 * cost.cache_write_per_m
+        - before_tokens as f64 / 1_000_000.0 * cost.cache_read_per_m)
+        .max(0.0);
+    let per_call_saving = saved_tokens as f64 / 1_000_000.0 * cost.cache_read_per_m;
     if per_call_saving <= 0.0 {
         return MutationDecision::Preserve {
             break_even: u32::MAX,
@@ -158,6 +156,42 @@ pub fn should_mutate_frozen(
     }
 }
 
+/// Expected future reuses of a cached prefix, read from the conversation
+/// itself: every prior assistant turn is a request that already re-sent the
+/// prefix. A pure function of the request, so the gate below decides the same
+/// way on every replay of the same turn (#498) — unlike a process-wide rate.
+#[must_use]
+pub fn observed_prefix_reuse(messages: &[Value]) -> u32 {
+    let turns = messages
+        .iter()
+        .filter(|m| m.get("role").and_then(Value::as_str) == Some("assistant"))
+        .count();
+    u32::try_from(turns).unwrap_or(u32::MAX)
+}
+
+/// Priced gate for compressing the `system` prompt while the client caches a
+/// message prefix (#1912). The system block sits in front of every cached
+/// message, so rewriting it busts the *whole* prefix: the bust is priced on
+/// `prefix_before` (system + cached messages, see [`prefix_tokens`]) and the
+/// saving on the measured shrink of the system block alone.
+#[must_use]
+pub fn system_mutation_decision(
+    prefix_before: u64,
+    system_before: &Value,
+    system_after: &Value,
+    reuse: u32,
+    cost: &ModelCost,
+) -> MutationDecision {
+    let saved =
+        system_tokens(Some(system_before)).saturating_sub(system_tokens(Some(system_after)));
+    should_mutate_frozen(
+        prefix_before,
+        prefix_before.saturating_sub(saved),
+        reuse,
+        cost,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,10 +199,10 @@ mod tests {
 
     fn opus() -> ModelCost {
         ModelCost {
-            input_per_m: 15.00,
-            output_per_m: 75.00,
-            cache_write_per_m: 18.75,
-            cache_read_per_m: 1.50,
+            input_per_m: 5.00,
+            output_per_m: 25.00,
+            cache_write_per_m: 6.25,
+            cache_read_per_m: 0.50,
         }
     }
 
@@ -249,7 +283,7 @@ mod tests {
         assert!(net_cost_decision(4000, 2500, &opus()));
         // Saving is the avoided write of the 1500 dropped tokens.
         let saved = repack_saving_usd(4000, 2500, &opus());
-        assert!((saved - (1500.0 / 1_000_000.0 * 18.75)).abs() < 1e-9);
+        assert!((saved - (1500.0 / 1_000_000.0 * 6.25)).abs() < 1e-9);
     }
 
     #[test]
@@ -259,11 +293,63 @@ mod tests {
 
     #[test]
     fn should_mutate_frozen_accepts_with_enough_reuse() {
-        let d = should_mutate_frozen(4000, 2000, 10, &opus());
-        match d {
-            MutationDecision::Mutate { break_even } => assert!(break_even <= 10),
-            MutationDecision::Preserve { .. } => panic!("expected Mutate"),
-        }
+        // bust = 2000×6.25 − 4000×0.50 = 10 500; saving/call = 2000×0.50 = 1 000
+        // (per-million units) → break-even after 11 reuses.
+        let d = should_mutate_frozen(4000, 2000, 20, &opus());
+        assert_eq!(d, MutationDecision::Mutate { break_even: 11 });
+        assert_eq!(
+            should_mutate_frozen(4000, 2000, 10, &opus()),
+            MutationDecision::Preserve { break_even: 11 }
+        );
+    }
+
+    #[test]
+    fn should_mutate_frozen_prices_savings_as_cache_reads() {
+        // Without a cache discount there is nothing to bust: mutate at once.
+        let flat = ModelCost {
+            input_per_m: 2.0,
+            output_per_m: 8.0,
+            cache_write_per_m: 2.0,
+            cache_read_per_m: 2.0,
+        };
+        assert_eq!(
+            should_mutate_frozen(4000, 2000, 1, &flat),
+            MutationDecision::Mutate { break_even: 1 }
+        );
+    }
+
+    #[test]
+    fn observed_reuse_counts_prior_assistant_turns() {
+        let msgs = vec![
+            json!({"role": "user", "content": "a"}),
+            json!({"role": "assistant", "content": "b"}),
+            json!({"role": "user", "content": "c"}),
+            json!({"role": "assistant", "content": "d"}),
+            json!({"role": "user", "content": "e"}),
+        ];
+        assert_eq!(observed_prefix_reuse(&msgs), 2);
+        assert_eq!(observed_prefix_reuse(&[]), 0);
+    }
+
+    #[test]
+    fn system_gate_prices_the_whole_prefix() {
+        let before = json!("context engineering ".repeat(1500));
+        let after = json!("context engineering ".repeat(300));
+        let prefix = system_tokens(Some(&before));
+        // Same shrink, but a large cached message tail behind the system block
+        // makes the bust dearer — the break-even must move out.
+        let small = system_mutation_decision(prefix, &before, &after, 1000, &opus());
+        let large = system_mutation_decision(prefix * 10, &before, &after, 1000, &opus());
+        let be = |d: MutationDecision| match d {
+            MutationDecision::Mutate { break_even } | MutationDecision::Preserve { break_even } => {
+                break_even
+            }
+        };
+        assert!(be(large) > be(small), "{small:?} vs {large:?}");
+        assert!(matches!(
+            system_mutation_decision(prefix, &before, &before, 1000, &opus()),
+            MutationDecision::Preserve { .. }
+        ));
     }
 
     #[test]
@@ -282,5 +368,16 @@ mod tests {
     fn should_mutate_frozen_rejects_inflation() {
         let d = should_mutate_frozen(3000, 4000, 100, &opus());
         assert!(matches!(d, MutationDecision::Preserve { .. }));
+    }
+
+    #[test]
+    fn model_cost_uses_current_pricing_table() {
+        // #1912: the gate used to price every Opus at the retired $15/$75 and
+        // every Haiku at $0.25 — now it reads the shared, current table.
+        let opus = model_cost_for("claude-opus-4-5");
+        assert!((opus.input_per_m - 5.0).abs() < 1e-9, "{opus:?}");
+        assert!((opus.cache_write_per_m - 6.25).abs() < 1e-9, "{opus:?}");
+        let haiku = model_cost_for("claude-haiku-4-5");
+        assert!((haiku.input_per_m - 1.0).abs() < 1e-9, "{haiku:?}");
     }
 }

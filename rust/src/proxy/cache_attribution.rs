@@ -96,25 +96,6 @@ pub fn classify(prev: Option<(u64, u64)>, curr_hash: u64, now: u64, ttl_secs: u6
     }
 }
 
-/// Estimated reuse count for a conversation. Returns the global warm_reuse
-/// count as a rough proxy — individual per-conversation tracking would
-/// require extending PrefixState. Global warm_reuses / total_anchored gives
-/// the average reuse rate across all conversations.
-#[must_use]
-pub fn estimated_reuse_rate() -> u32 {
-    let warm = WARM_REUSES.load(Ordering::Relaxed);
-    let total = warm
-        + COLD_STARTS.load(Ordering::Relaxed)
-        + TTL_LAPSES.load(Ordering::Relaxed)
-        + PREFIX_CHANGES.load(Ordering::Relaxed);
-    if total == 0 {
-        return 5; // conservative default: assume 5 reuses
-    }
-    // Average reuse: warm / (total - warm) capped at u32
-    let non_warm = total.saturating_sub(warm).max(1);
-    (warm / non_warm).min(u32::MAX as u64) as u32
-}
-
 fn bump(outcome: CacheOutcome) {
     let counter = match outcome {
         CacheOutcome::ColdStart => &COLD_STARTS,

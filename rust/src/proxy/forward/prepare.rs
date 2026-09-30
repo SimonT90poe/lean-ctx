@@ -337,12 +337,7 @@ pub(crate) fn prepare_request_body(
         };
     cache_tool_results(cache, tool_results_to_cache);
     let final_parsed = serde_json::from_slice(&logical_body).ok();
-    let body = match encoding {
-        RequestBodyEncoding::Identity => logical_body,
-        RequestBodyEncoding::Gzip => encode_gzip(&logical_body)?,
-        RequestBodyEncoding::Zstd => encode_zstd(&logical_body)?,
-        RequestBodyEncoding::Passthrough => unreachable!("passthrough returned above"),
-    };
+    let body = encode_request_body(parts, logical_body)?;
 
     Ok(PreparedRequestBody {
         body,
@@ -354,6 +349,18 @@ pub(crate) fn prepare_request_body(
         content_dedup_tokens_saved,
         route,
     })
+}
+
+/// Encodes a rewritten logical JSON body with the caller's `Content-Encoding`,
+/// which is forwarded upstream unchanged. Only decodable encodings ever yield a
+/// parsed body to rewrite, so an opaque one here is an internal error.
+pub(crate) fn encode_request_body(parts: &Parts, logical: Vec<u8>) -> Result<Vec<u8>, StatusCode> {
+    match request_body_encoding(parts) {
+        RequestBodyEncoding::Identity => Ok(logical),
+        RequestBodyEncoding::Gzip => encode_gzip(&logical),
+        RequestBodyEncoding::Zstd => encode_zstd(&logical),
+        RequestBodyEncoding::Passthrough => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
 }
 
 #[cfg(not(feature = "shape-xlat"))]

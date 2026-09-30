@@ -5,6 +5,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — proxy keeps the prompt-cache prefix byte-stable (#1912)
+
+- Effort routing no longer busts the Anthropic cache: the complexity score is
+  session-stable, so the injected `thinking` block stays identical across
+  turns. The thinking budget is capped at half of `max_tokens`, so requests
+  with `max_tokens` below 2048 get no injection. A client-set OpenAI
+  `reasoning_effort` is never overridden.
+- When a guard reverts the compression, or nothing changed, the proxy forwards
+  the client's original bytes instead of a re-serialized body. gzip/zstd
+  bodies are re-encoded correctly after a rewrite.
+- Compressing the system prompt of a warm (client-cached) conversation is now
+  priced: it only happens when the per-turn cache-read saving repays the
+  one-off cache re-write within the conversation's observed length. Once a
+  conversation is compressed, it stays compressed, so the prefix never flips.
+- Model prices come from the current pricing table (Opus 4.5: $5/M input)
+  instead of a stale hard-coded list.
+- Docs: removed the unmeasured "~5-15% extra savings" claim; OpenAI caching
+  discounts are now described as "up to 90% on GPT-5-family".
+
 ### Fixed — quality claims match what the gates can show (#1905)
 
 - `lean-ctx eval ab` reports now print `POWER: underpowered` when a run has
