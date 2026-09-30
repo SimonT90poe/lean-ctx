@@ -1003,6 +1003,7 @@ pub async fn serve_ipc(cfg: HttpServerConfig, addr: crate::ipc::DaemonAddr) -> R
     cfg.validate()?;
 
     crate::core::savings_autopush::spawn_if_enabled();
+    crate::cloud_sync::spawn_daemon_telemetry();
 
     match addr {
         #[cfg(unix)]
