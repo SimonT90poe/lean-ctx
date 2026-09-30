@@ -378,6 +378,29 @@ mod tests {
         );
     }
 
+    /// Spawn a formatter script the test has just written. When another test
+    /// thread forks while that write handle is still open, the child inherits
+    /// it and `exec` fails with ETXTBSY until the child execs or exits. Retry
+    /// only that error; any other spawn failure is returned at once.
+    #[cfg(unix)]
+    fn spawn_fresh_script(
+        template: &str,
+        abs_path: &str,
+        project_root: &str,
+    ) -> Result<CapturedFormatter, String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match spawn_command_formatter(template, abs_path, project_root) {
+                Err(error)
+                    if error.contains("Text file busy") && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                result => return result,
+            }
+        }
+    }
+
     #[test]
     fn rs_defaults_to_rustfmt() {
         let f = resolve_formatter("/x/a.rs");
@@ -579,7 +602,7 @@ mod tests {
         let template = format!("{} {{file}}", formatter.display());
         let source_path = source.to_str().unwrap().to_owned();
         let project_root = dir.path().to_str().unwrap().to_owned();
-        let process = spawn_command_formatter(&template, &source_path, &project_root)
+        let process = spawn_fresh_script(&template, &source_path, &project_root)
             .expect("formatter process must spawn");
 
         assert!(
@@ -612,7 +635,7 @@ mod tests {
         let source = dir.path().join("a.rs");
         std::fs::write(&source, "fn x() {}\n").unwrap();
 
-        let process = spawn_command_formatter(
+        let process = spawn_fresh_script(
             &format!("{} {{file}}", formatter.display()),
             source.to_str().unwrap(),
             dir.path().to_str().unwrap(),
