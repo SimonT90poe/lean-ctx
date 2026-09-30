@@ -115,10 +115,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - The edit-quality penalty now escalates a mode with repeated edit failures
   straight to `full`, as documented. It no longer steps down to a lossier
   `signatures` or `map` view.
-- `entropy` reads are deterministic again. The semantic line filter only ran
-  while the embedding model happened to be loaded, so two reads of the same
-  file could differ, which defeats provider prompt caching. It is off for
-  reads now.
+- `entropy` reads are deterministic. Once `entropy` actually dropped lines,
+  two things made two reads of the same file differ, which defeats provider
+  prompt caching:
+  - the semantic line filter ran only while the embedding model happened to
+    be loaded;
+  - the learned thresholds (feedback, quality learner, bandit arm) shift
+    between calls.
+
+  Reads now use the per-language threshold adjusted by the file's own
+  compressibility, plus `aggressiveness`. The semantic filter is off for
+  reads.
 
 ### Fixed — quality claims match what the gates can show (#1905)
 

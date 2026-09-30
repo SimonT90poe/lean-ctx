@@ -1226,7 +1226,7 @@ fn render_entropy(content: &str, ctx: RenderCtx<'_>, tuning: &ReadTuning<'_>) ->
         })
         .unwrap_or_default();
     let result = match (task_kws.is_empty(), tuning.aggressiveness) {
-        // Aggressiveness overrides the learned BPE-entropy threshold for
+        // Aggressiveness overrides the file-adaptive BPE-entropy threshold for
         // the plain (no task keywords) path; task-conditioned entropy
         // keeps its own relevance-aware thresholds.
         (true, Some(a)) => entropy::entropy_compress_with_threshold(

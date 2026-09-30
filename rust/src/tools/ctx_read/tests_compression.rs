@@ -184,9 +184,9 @@ fn entropy_saves_on_real_source_and_scales_with_aggressiveness() {
         .0
     };
     let default = render_at(None);
-    // The default threshold is learned (feedback, bandit arm), so it is not a
-    // fixed point on the aggressiveness scale; monotonicity is checked on
-    // explicit levels only.
+    // The default threshold is file-adaptive (per-language base plus the
+    // content's compressibility), not a point on the aggressiveness scale;
+    // monotonicity is checked on explicit levels only.
     let low = count_tokens(&render_at(Some(0.1)));
     let mid = count_tokens(&render_at(Some(0.5)));
     let high = count_tokens(&render_at(Some(0.9)));

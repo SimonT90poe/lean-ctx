@@ -256,7 +256,7 @@ pub fn entropy_compress_adaptive(
     path: &str,
     force_keep: &[String],
 ) -> EntropyResult {
-    let thresholds = super::adaptive_thresholds::adaptive_thresholds(path, content);
+    let thresholds = super::adaptive_thresholds::read_thresholds(path, content);
     let before_lines = content.lines().count() as u32;
     let result = entropy_compress_with_thresholds(
         content,
@@ -280,7 +280,7 @@ pub fn entropy_compress_adaptive(
     result
 }
 
-/// Like [`entropy_compress_adaptive`] but overrides the learned BPE-entropy
+/// Like [`entropy_compress_adaptive`] but overrides the file-adaptive BPE-entropy
 /// threshold (e.g. from the aggressiveness knob) while keeping the file-adaptive
 /// jaccard. Pure function of its inputs (#498). Higher `bpe_entropy` drops more
 /// low-information lines.
@@ -290,7 +290,7 @@ pub fn entropy_compress_with_threshold(
     bpe_entropy: f64,
     force_keep: &[String],
 ) -> EntropyResult {
-    let thresholds = super::adaptive_thresholds::adaptive_thresholds(path, content);
+    let thresholds = super::adaptive_thresholds::read_thresholds(path, content);
     entropy_compress_with_thresholds(content, bpe_entropy, thresholds.jaccard, force_keep)
 }
 
@@ -305,7 +305,7 @@ pub fn entropy_compress_task_conditioned(
     task_keywords: &[String],
     force_keep: &[String],
 ) -> EntropyResult {
-    let thresholds = super::adaptive_thresholds::adaptive_thresholds(path, content);
+    let thresholds = super::adaptive_thresholds::read_thresholds(path, content);
     let before_lines = content.lines().count() as u32;
     let result = entropy_compress_with_task(
         content,
