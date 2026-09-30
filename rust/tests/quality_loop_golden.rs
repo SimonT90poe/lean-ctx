@@ -112,8 +112,11 @@ fn edit_fail_after_map_read_escalates_and_penalizes() {
     // #1911: whichever mode auto picks for this file (science `cognitive` or
     // heuristic `map`), once that mode is risky the answer is `full` — never a
     // fallback to `map`/`signatures`. rs|cognitive: 2/2 fails; rs|map:
-    // 4/16 = 0.25 re-enters risky.
-    let miss = params_for(&path, "fn imagined_from_compressed_view()");
+    // 4/16 = 0.25 re-enters risky. The successes above left `fn replaced() {}`
+    // in the file, so these misses need a new_string that is not there —
+    // otherwise ctx_edit reports "already applied" and records no failure.
+    let mut miss = params_for(&path, "fn imagined_from_compressed_view()");
+    miss.new_string = "fn never_written() {}".to_string();
     for mode in ["cognitive", "cognitive", "map", "map"] {
         let (t, e) = run_io(&miss, mode);
         assert!(t.contains("old_string not found"), "got: {t}");

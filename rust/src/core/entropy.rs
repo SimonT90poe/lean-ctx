@@ -379,6 +379,11 @@ fn line_embedder(_line_count: usize) -> impl Fn(&str) -> Option<Vec<f32>> {
     |_: &str| None
 }
 
+/// Read-path entropy compression. The semantic redundancy filter (#544) is
+/// off here: it ran only while the embedding model happened to be loaded, so
+/// two reads of the same file could return different text — which breaks the
+/// output-determinism contract (#498) and, since #1910 made `entropy` drop
+/// lines at all, showed up as `read_mode_deterministic:entropy` failing.
 fn entropy_compress_with_task(
     content: &str,
     entropy_threshold: f64,
@@ -391,7 +396,7 @@ fn entropy_compress_with_task(
         entropy_threshold,
         jaccard_threshold,
         task_keywords,
-        true,
+        false,
         force_keep,
     )
 }

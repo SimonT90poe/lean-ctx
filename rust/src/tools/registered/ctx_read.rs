@@ -3,14 +3,13 @@ use std::sync::{Arc, Mutex};
 
 use rmcp::ErrorData;
 use rmcp::model::Tool;
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
 use crate::core::cache::ReuseOutcome;
 use crate::server::tool_trait::{
     McpTool, ToolContext, ToolOutput, get_bool, get_f64, get_int, get_str, get_str_array,
     require_resolved_path,
 };
-use crate::tool_defs::tool_def;
 
 /// Per-file lock that serializes concurrent reads of the same path.
 ///
@@ -34,32 +33,7 @@ impl McpTool for CtxReadTool {
     }
 
     fn tool_def(&self) -> Tool {
-        tool_def(
-            "ctx_read",
-            "Read source files. mode recommended — choose by intent (see `mode` below); defaults to auto when omitted.\n\
-             To UNDERSTAND code run ctx_compose FIRST; ctx_read after it identified files.\n\
-             anchored → edit by reference via ctx_patch (no exact-recall).",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Absolute path" },
-                    "paths": { "type": "array", "items": { "type": "string" }, "description": "Batch read" },
-                    "mode": {
-                        "type": "string",
-                        "description": "Recommended (defaults to auto). full=complete(edit-ready; ≤turn budget, raw=true beyond) anchored=full+N:hh|anchors(edit via ctx_patch) raw=exact-bytes signatures=API map=structure auto=smart diff=cache-delta lines:N-M=window -N=tail 5,10-20=multi reference=quotes task=focus"
-                    },
-                    "raw": { "type": "boolean", "description": "Verbatim (= mode=raw + fresh)" },
-                    "start_line": { "type": "integer", "description": "1-based" },
-                    "offset": { "type": "integer", "description": "start_line alias" },
-                    "limit": { "type": "integer", "description": "Max lines" },
-                    "fresh": { "type": "boolean", "description": "Bypass cache" },
-                    "aggressiveness": { "type": "number", "description": "0.0–1.0 density (entropy/task)" },
-                    "protect": { "type": "array", "items": { "type": "string" }, "description": "Symbols kept verbatim" },
-                    "engine_interface": engine::interface_schema()
-                },
-                "required": []
-            }),
-        )
+        schema::ctx_read_tool_def()
     }
 
     fn handle(
@@ -1465,8 +1439,11 @@ impl CtxReadTool {
 
 #[path = "ctx_read_engine.rs"]
 mod engine;
+// #660 LOC gate: the MCP tool definition lives in its own module.
 #[path = "ctx_read_image.rs"]
 mod image;
+#[path = "ctx_read_schema.rs"]
+mod schema;
 use image::read_image_file;
 // #660 LOC gate: leaf helpers live in their own module.
 #[path = "ctx_read_helpers.rs"]
