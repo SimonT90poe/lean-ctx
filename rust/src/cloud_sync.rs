@@ -154,6 +154,39 @@ pub fn send_telemetry(trigger: crate::core::telemetry_aggregate::SendTrigger) ->
         .map(|event| event.timestamp_bucket.clone())
 }
 
+/// How often the daemon offers the day's totals. The aggregate's admission
+/// (daily cap, growing spacing, "nothing new") decides whether a send happens.
+const DAEMON_TELEMETRY_INTERVAL: std::time::Duration = std::time::Duration::from_hours(1);
+/// Delay before the daemon's first offer so its startup stays light.
+const DAEMON_TELEMETRY_INITIAL_DELAY: std::time::Duration = std::time::Duration::from_mins(2);
+
+/// Spawn the daemon's telemetry loop (must run inside a Tokio runtime).
+///
+/// Without it, sends happen only inside an MCP server (tool-call ticks and
+/// exit), so installs that use lean-ctx through hooks, the CLI or the proxy
+/// were never counted. The daemon is the one long-lived process setup starts;
+/// it also forwards the counters other processes persisted. Eligibility is
+/// re-checked on every tick, so an opt-out takes effect without a restart.
+pub(crate) fn spawn_daemon_telemetry() {
+    tokio::spawn(async {
+        tokio::time::sleep(DAEMON_TELEMETRY_INITIAL_DELAY).await;
+        loop {
+            let _ = tokio::task::spawn_blocking(daemon_telemetry_tick).await;
+            tokio::time::sleep(DAEMON_TELEMETRY_INTERVAL).await;
+        }
+    });
+}
+
+fn daemon_telemetry_tick() {
+    if !telemetry_send_eligible() {
+        return;
+    }
+    if let Err(error) = crate::core::telemetry_aggregate::record_current_version() {
+        tracing::debug!("telemetry version aggregate unavailable: {error}");
+    }
+    send_telemetry(crate::core::telemetry_aggregate::SendTrigger::Periodic);
+}
+
 pub fn cloud_background_tasks() {
     // Persist path: read global-only so the daily background save never leaks a
     // project-local override into the global config (#443).
@@ -850,5 +883,30 @@ mod tests {
         assert!(consumes_daily_slot(AutoSyncOutcome::Gated));
         assert!(consumes_daily_slot(AutoSyncOutcome::Synced));
         assert!(!consumes_daily_slot(AutoSyncOutcome::NetworkFailure));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn daemon_tick_honours_an_explicit_opt_out() {
+        let _iso = crate::core::data_dir::isolated_data_dir();
+        let config = Config::path().expect("config path");
+        std::fs::create_dir_all(config.parent().expect("config dir")).expect("config dir");
+        std::fs::write(&config, "[telemetry]\nenabled = false\n").expect("write opt-out");
+        daemon_telemetry_tick();
+        let state = crate::core::paths::state_dir().expect("state dir");
+        assert!(!state.join("telemetry_v2_aggregate.json").exists());
+        assert!(!state.join("telemetry_v2_one_shots.json").exists());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn daemon_tick_attempts_a_send_for_a_default_install() {
+        // No config file: the default-on install the daemon exists to cover.
+        // The test guard sends to a discard port, so the batch stays pending,
+        // which proves the tick reached the send path.
+        let _iso = crate::core::data_dir::isolated_data_dir();
+        daemon_telemetry_tick();
+        let state = crate::core::paths::state_dir().expect("state dir");
+        assert!(state.join("telemetry_v2_aggregate.json").exists());
     }
 }

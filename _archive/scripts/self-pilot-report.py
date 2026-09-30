@@ -57,7 +57,8 @@ def pilot_days(stats: dict[str, Any]) -> float | None:
     return round(max(0.0, (end - start).total_seconds() / 86400), 2)
 
 
-def registered_agents() -> int | None:
+def registered_agent_identities() -> int | None:
+    """Counts identity-registry records; says nothing about bus coordination."""
     try:
         records = run_json(["lean-ctx", "agent", "list", "--json"])
     except (FileNotFoundError, subprocess.CalledProcessError, json.JSONDecodeError):
@@ -108,7 +109,7 @@ def main() -> int:
     saved = input_tokens - min(input_tokens, output_tokens)
     savings_pct = percent(input_tokens, output_tokens)
     duration_days = pilot_days(stats)
-    agents = registered_agents()
+    agents = registered_agent_identities()
     launchagent = proxy_launchagent_active()
     sustained = duration_days is not None and duration_days >= MINIMUM_PILOT_DAYS
     passed = sustained and input_tokens > 0 and sessions > 0
@@ -133,7 +134,7 @@ def main() -> int:
     ("Output Tokens", f"{output_tokens / 1_000_000:.1f}M"),
     ("Tokens Saved", f"{saved / 1_000_000:.1f}M ({savings_pct:.1f}%)"),
     ("Shell Commands", f"{commands:,}"),
-    ("Registered Agents", agent_text),
+    ("Registered Agent Identities", agent_text),
 ])}
 
 ## Coverage Classes
@@ -143,7 +144,7 @@ def main() -> int:
 | File Reads | ctx_read modes recorded: {read_mode_names} |
 | Shell Commands | {commands:,} commands recorded by lean-ctx stats |
 | Code Search | ctx_search grep/symbol/semantic |
-| Multi-Agent | {agent_text} registered agents from the agent bus |
+| Multi-Agent | {agent_text} registered agent identities (identity registry; not a measure of agent-bus coordination) |
 | Proxy Interception | {proxy_text}; stream-aware accounting tracked {integer(stats.get('stream_tracked_results', 0), 'stream_tracked_results'):,} results |
 
 ## Compression by Read Mode
@@ -154,7 +155,7 @@ def main() -> int:
 
 ## Gate Verdict
 
-G9 Self-Pilot: **{verdict}** — requires at least {MINIMUM_PILOT_DAYS} days of continuous, measured self-pilot usage plus non-zero sessions and token traffic. This report uses only the live `lean-ctx stats json` and agent-bus output captured at generation time.
+G9 Self-Pilot: **{verdict}** — requires at least {MINIMUM_PILOT_DAYS} days of continuous, measured self-pilot usage plus non-zero sessions and token traffic. This report uses only the live `lean-ctx stats json` and `lean-ctx agent list --json` output captured at generation time.
 """
     evidence = {
         "gate": "G9",
@@ -168,7 +169,7 @@ G9 Self-Pilot: **{verdict}** — requires at least {MINIMUM_PILOT_DAYS} days of 
             "tokens_saved": saved,
             "compression_ratio_pct": savings_pct,
             "shell_commands": commands,
-            "registered_agents": agents,
+            "registered_agent_identities": agents,
             "proxy_launchagent_active": launchagent,
             "stream_tracked_results": integer(stats.get("stream_tracked_results", 0), "stream_tracked_results"),
             "read_modes": dict(sorted(mode_counts.items())),

@@ -1029,3 +1029,96 @@ fn is_copilot_host_detects_variants() {
     assert!(!super::is_copilot_host("https://api.anthropic.com"));
     assert!(!super::is_copilot_host("https://api.openai.com"));
 }
+
+/// A warm conversation whose whole message history is client-cached: the
+/// opening turn (unique `first_text` → unique conversation key), `turns` prior
+/// exchanges, and a closing user turn carrying the cache breakpoint.
+fn warm_body(first_text: &str, system: &str, turns: usize, filler: &str) -> Value {
+    let mut messages = vec![serde_json::json!({"role": "user", "content": first_text})];
+    for i in 0..turns {
+        messages.push(serde_json::json!({"role": "assistant", "content": format!("done {i}")}));
+        messages.push(serde_json::json!({"role": "user", "content": filler}));
+    }
+    messages.push(serde_json::json!({"role": "user", "content": [
+        {"type": "text", "text": "continue", "cache_control": {"type": "ephemeral"}}
+    ]}));
+    serde_json::json!({"model": "claude-opus-4-5", "system": system, "messages": messages})
+}
+
+fn warm_gate_config(cache_policy: bool) {
+    crate::test_env::remove_var("LEAN_CTX_PROXY_CACHE_POLICY");
+    crate::test_env::remove_var("LEAN_CTX_PROXY_COLD_PREFIX_REPACK");
+    crate::core::config::Config::update_global(|c| {
+        c.proxy.role_aggressiveness.system = Some(0.9);
+        c.proxy.cold_prefix_repack = Some(false);
+        c.proxy.cache_policy = Some(cache_policy);
+    })
+    .unwrap();
+}
+
+fn system_after(body: Value) -> String {
+    let bytes = serde_json::to_vec(&body).unwrap();
+    let (out, _o, _c) = compress_request_body(body, bytes.len());
+    serde_json::from_slice::<Value>(&out).unwrap()["system"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[test]
+fn warm_system_gate_preserves_when_the_bust_does_not_pay() {
+    // #1912: one prior turn in front of a huge cached tail — rewriting the
+    // system block would re-write the whole prefix for a tiny per-turn saving.
+    let _iso = crate::core::data_dir::isolated_data_dir();
+    warm_gate_config(true);
+    let prose = big_prose().repeat(8);
+    let huge_tail = "lorem ipsum dolor sit amet consectetur ".repeat(4000);
+    let body = warm_body("warm-gate-preserve-session", &prose, 1, &huge_tail);
+    assert_eq!(
+        system_after(body),
+        prose,
+        "Preserve must keep the prefix verbatim"
+    );
+}
+
+#[test]
+fn warm_system_gate_mutates_long_sessions_and_latches() {
+    // #1912: a long session repays the one-off bust, so the gate compresses the
+    // system prompt — and the per-conversation latch keeps every later turn on
+    // that same compressed prefix, even a turn the gate alone would preserve.
+    let _iso = crate::core::data_dir::isolated_data_dir();
+    warm_gate_config(true);
+    let prose = big_prose().repeat(8);
+    let first = "warm-gate-latch-session";
+
+    let compressed = system_after(warm_body(first, &prose, 200, "next"));
+    assert!(
+        compressed.len() < prose.len(),
+        "a paying rewrite must compress"
+    );
+    assert_eq!(
+        system_after(warm_body(first, &prose, 200, "next")),
+        compressed,
+        "a replayed turn must produce the identical prefix"
+    );
+
+    let huge_tail = "lorem ipsum dolor sit amet consectetur ".repeat(4000);
+    assert_eq!(
+        system_after(warm_body(first, &prose, 1, &huge_tail)),
+        compressed,
+        "once latched, the conversation must never flip back to the verbatim prefix"
+    );
+}
+
+#[test]
+fn warm_system_gate_needs_cache_economics() {
+    let _iso = crate::core::data_dir::isolated_data_dir();
+    warm_gate_config(false);
+    let prose = big_prose().repeat(8);
+    let body = warm_body("warm-gate-policy-off-session", &prose, 200, "next");
+    assert_eq!(
+        system_after(body),
+        prose,
+        "without cache economics a cached prefix is never rewritten (#448)"
+    );
+}

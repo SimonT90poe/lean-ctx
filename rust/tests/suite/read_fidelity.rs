@@ -14,9 +14,21 @@ use std::process::{Command, Output};
 /// `return`), duplicate lines (line-drop dedup bait) and blank lines.
 const SAMPLE: &str = "fn run() {\n\n    let command = execution();\n    let command = execution();\n    // command execution pipeline\n    return command;\n}\n";
 
+/// Writes `SAMPLE` into a project dir below the temp HOME. The read runs from
+/// that dir: `lean-ctx read` is jailed to the project root (#1903), and HOME
+/// itself is refused as a root, so the fixture must live in its own project.
+fn sample_project(home: &Path) -> std::path::PathBuf {
+    let proj = home.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let file = proj.join("sample.rs");
+    std::fs::write(&file, SAMPLE).unwrap();
+    file
+}
+
 fn read_output(home: &Path, file: &Path, mode: &str) -> Output {
     Command::new(env!("CARGO_BIN_EXE_lean-ctx"))
         .args(["read", file.to_str().unwrap(), "-m", mode, "--fresh"])
+        .current_dir(file.parent().unwrap())
         // Force the densest compression so a missing guard would visibly mangle.
         .env("LEAN_CTX_COMPRESSION", "max")
         .env("LEAN_CTX_ACTIVE", "1")
@@ -32,8 +44,7 @@ fn read_output(home: &Path, file: &Path, mode: &str) -> Output {
 #[test]
 fn cli_full_read_is_byte_exact() {
     let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("sample.rs");
-    std::fs::write(&file, SAMPLE).unwrap();
+    let file = sample_project(dir.path());
 
     let out = read_output(dir.path(), &file, "full");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -46,8 +57,7 @@ fn cli_full_read_is_byte_exact() {
 #[test]
 fn cli_lines_read_is_byte_exact() {
     let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("sample.rs");
-    std::fs::write(&file, SAMPLE).unwrap();
+    let file = sample_project(dir.path());
 
     let out = read_output(dir.path(), &file, "lines:1-3");
     let stdout = String::from_utf8_lossy(&out.stdout);

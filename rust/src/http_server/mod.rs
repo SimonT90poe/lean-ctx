@@ -33,6 +33,7 @@ use crate::engine::ContextEngine;
 use crate::tools::LeanCtxServer;
 
 mod config;
+mod discovery;
 mod handlers;
 #[allow(clippy::wildcard_imports)]
 use handlers::*;
@@ -633,48 +634,13 @@ async fn a2a_jsonrpc(Json(body): Json<Value>) -> impl IntoResponse {
 }
 
 async fn v1_a2a_agent_card(State(state): State<AppState>) -> impl IntoResponse {
-    let card = crate::core::a2a::agent_card::build_agent_card(&state.project_root);
+    let card =
+        crate::core::a2a::agent_card::build_agent_card(&state.project_root, state.token.is_some());
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/json")],
         Json(card),
     )
-}
-
-async fn mcp_server_card() -> impl IntoResponse {
-    let card = serde_json::json!({
-        "name": "lean-ctx",
-        "version": env!("CARGO_PKG_VERSION"),
-        "description": "Context Infrastructure Layer — compression, caching, governance for AI agents",
-        "capabilities": {
-            "tools": true,
-            "resources": false,
-            "prompts": false,
-            "sampling": false
-        },
-        "tool_categories": [
-            {"name": "file_operations", "tools": ["ctx_read", "ctx_search", "ctx_tree", "ctx_edit"], "avg_token_cost": 150},
-            {"name": "session_management", "tools": ["ctx_session", "ctx_compress", "ctx_dedup", "ctx_preload"], "avg_token_cost": 80},
-            {"name": "intelligence", "tools": ["ctx_knowledge", "ctx_semantic_search", "ctx_graph", "ctx_overview"], "avg_token_cost": 200},
-            {"name": "agent_ops", "tools": ["ctx_agent", "ctx_handoff", "ctx_task", "ctx_share"], "avg_token_cost": 120}
-        ],
-        "features": {
-            "compression": "deterministic AST-based, 40-70% token reduction",
-            "caching": "session-scoped with zstd, unchanged full/auto re-reads ~13 tokens",
-            "audit_trail": "SHA-256 chained JSONL",
-            "rbac": "5 built-in roles with capability-based access",
-            "sandboxing": "Level 0 (subprocess) + Level 1 (OS-level)",
-            "secret_detection": "8 regex patterns + custom"
-        },
-        "security": {
-            "path_jail": true,
-            "rate_limiting": true,
-            "budget_tracking": true,
-            "signed_handoffs": true,
-            "timing_safe_auth": true
-        }
-    });
-    Json(card)
 }
 
 async fn v1_agents_register(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
@@ -873,7 +839,10 @@ fn build_app_router_with_auth(cfg: &HttpServerConfig, require_auth: bool) -> Rou
         .route("/v1/a2a/handoff", axum::routing::post(v1_a2a_handoff))
         .route("/v1/a2a/agent-card", get(v1_a2a_agent_card))
         .route("/.well-known/agent.json", get(v1_a2a_agent_card))
-        .route("/.well-known/mcp-server.json", get(mcp_server_card))
+        .route(
+            "/.well-known/mcp-server.json",
+            get(discovery::mcp_server_card),
+        )
         .route("/a2a", axum::routing::post(a2a_jsonrpc))
         .route(
             "/v1/agents/register",
@@ -1003,6 +972,7 @@ pub async fn serve_ipc(cfg: HttpServerConfig, addr: crate::ipc::DaemonAddr) -> R
     cfg.validate()?;
 
     crate::core::savings_autopush::spawn_if_enabled();
+    crate::cloud_sync::spawn_daemon_telemetry();
 
     match addr {
         #[cfg(unix)]

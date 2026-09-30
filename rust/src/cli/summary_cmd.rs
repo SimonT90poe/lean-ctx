@@ -4,15 +4,17 @@ use crate::core::session::SessionState;
 use crate::tools::ctx_summary;
 
 pub(crate) fn cmd_summary(args: &[String]) {
-    let project_root = super::common::detect_project_root(args);
-
     let positionals: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
     let first = positionals.first().map_or("recall", |s| s.as_str());
 
-    if matches!(first, "help" | "--help" | "-h") {
+    // `--help` never reaches `positionals`, so it is checked on its own —
+    // before project-root detection and the default `recall` (#1906).
+    if matches!(first, "help" | "-h") || args.iter().any(|a| a == "--help") {
         print_help();
         return;
     }
+
+    let project_root = super::common::detect_project_root(args);
 
     // Known sub-actions; anything else is treated as a recall query so that
     // `lean-ctx summary what did I change?` just works.
@@ -47,7 +49,7 @@ fn parse_top_k(args: &[String]) -> Option<usize> {
 }
 
 fn print_help() {
-    eprintln!(
+    println!(
         "lean-ctx summary — record + recall AI session summaries\n\
          \n\
          USAGE:\n    \

@@ -73,11 +73,15 @@ const TOUCH_FILE: &str = "cold_prefix_touch.json";
 
 /// Per-conversation tracking state. `last_touch` is the Unix-seconds timestamp of
 /// the most recent request; `repacking` latches on once a cold gap triggered a
-/// repack, so subsequent turns stay cache-stable on the compressed prefix (#499).
+/// repack, so subsequent turns stay cache-stable on the compressed prefix (#499);
+/// `system_compressed` latches on once the warm-prefix cost gate compressed the
+/// system prompt, so later turns keep sending that same prefix (#1912).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 struct ConvState {
     last_touch: u64,
     repacking: bool,
+    #[serde(default)]
+    system_compressed: bool,
 }
 
 fn store() -> &'static Mutex<HashMap<u64, ConvState>> {
@@ -271,6 +275,7 @@ pub fn repack_decision(messages: &[Value], cached: usize) -> bool {
             ConvState {
                 last_touch: now,
                 repacking,
+                ..prev.unwrap_or_default()
             },
         );
         if map.len() > MAX_TRACKED {
@@ -288,6 +293,38 @@ pub fn repack_decision(messages: &[Value], cached: usize) -> bool {
 
     maybe_persist(changed, now);
     decision
+}
+
+/// True once the warm-prefix cost gate compressed this conversation's system
+/// prompt (#1912). The latch keeps every later turn on the compressed prefix the
+/// provider cached — re-deciding per turn could flip back and bust it again.
+pub(crate) fn system_compression_latched(key: u64) -> bool {
+    store()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+        .is_some_and(|s| s.system_compressed)
+}
+
+/// Engages the system-compression latch for a conversation and persists it
+/// eagerly, so a proxy restart cannot flip the conversation back to the
+/// uncompressed prefix.
+pub(crate) fn latch_system_compression(key: u64) {
+    let now = now_secs();
+    {
+        let mut map = store()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = map.entry(key).or_insert(ConvState {
+            last_touch: now,
+            ..ConvState::default()
+        });
+        entry.system_compressed = true;
+        if map.len() > MAX_TRACKED {
+            evict_oldest(&mut map);
+        }
+    }
+    maybe_persist(true, now);
 }
 
 /// On-disk shape of the cross-restart baselines. `ts` is advisory (debugging);
@@ -342,6 +379,7 @@ fn resume_from_disk_unlocked() {
             entry.last_touch = state.last_touch;
         }
         entry.repacking |= state.repacking;
+        entry.system_compressed |= state.system_compressed;
     }
     while map.len() > MAX_TRACKED {
         evict_oldest(&mut map);
@@ -409,6 +447,7 @@ pub(crate) fn test_seed_last_touch(messages: &[Value], secs_ago: u64) {
                 ConvState {
                     last_touch: when,
                     repacking: false,
+                    system_compressed: false,
                 },
             );
     }

@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow, bail};
 use clap::{ArgMatches, Command};
 
 use crate::core::savings_ledger::event::SavingsEvent;
-use crate::core::{ocla::OclaService, ocla_bus, savings_ledger};
+use crate::core::{ocla::OclaService, savings_ledger};
 
 // ── Status (Agent 07) ────────────────────────────────────────────────────────
 
@@ -109,16 +109,6 @@ fn print_status() {
         let capability = service(registry).capability();
         println!("  {name}: builtin ({:?})", capability.status);
     }
-
-    println!(
-        "OclaBus: {} (total events emitted: {})",
-        if ocla_bus::is_enabled() {
-            "enabled"
-        } else {
-            "disabled"
-        },
-        ocla_bus::total_emitted()
-    );
 
     let path = savings_ledger::store::default_path();
     let summary = path

@@ -5,6 +5,7 @@ use crate::{
 pub mod analytics;
 pub(crate) mod benchmark_run;
 pub(crate) mod calibrate;
+mod cmd_help;
 mod evidence;
 pub(crate) mod evidence_cost;
 pub(crate) mod evidence_realworld;
@@ -50,6 +51,11 @@ pub fn run() {
 
     if args.len() > 1 {
         let rest = args[2..].to_vec();
+
+        if let Some(usage) = cmd_help::guarded_help(&args[1], &rest) {
+            print!("{usage}");
+            return;
+        }
 
         match args[1].as_str() {
             "-c" | "exec" => handle_exec(&args, &rest),
@@ -464,9 +470,11 @@ pub fn run() {
             }
             "import" => {
                 crate::cli::import_cmd::cmd_import(&rest);
+                return;
             }
             "checkpoints" => {
                 crate::cli::checkpoint_cmd::cmd_checkpoints(&rest);
+                return;
             }
             "knowledge" => {
                 super::cmd_knowledge(&rest);
@@ -813,7 +821,7 @@ pub fn run() {
                 return;
             }
             "upgrade" => {
-                super::cloud::cmd_upgrade();
+                super::cloud::cmd_upgrade(&rest);
                 return;
             }
             "--version" | "-V" => {
@@ -905,9 +913,6 @@ fn handle_editor_session(args: &[String]) {
     }
 }
 
-/// Long-lived server entry points keep Rust's default ignored SIGPIPE: they
-/// must survive peers closing sockets/pipes early. Bare `lean-ctx` counts as
-/// a server because MCP clients spawn the binary without a subcommand.
 /// Help for `lean-ctx setup`. Printed for `--help`/`-h` and unknown flags so
 /// asking about setup can never accidentally *run* setup (#476 class, #658).
 fn print_setup_help() {
@@ -928,6 +933,9 @@ fn print_setup_help() {
     println!("See also: lean-ctx onboard (one-command setup), lean-ctx doctor");
 }
 
+/// Long-lived server entry points keep Rust's default ignored SIGPIPE: they
+/// must survive peers closing sockets/pipes early. Bare `lean-ctx` counts as
+/// a server because MCP clients spawn the binary without a subcommand.
 fn is_server_mode(args: &[String]) -> bool {
     args.len() == 1
         || args.get(1).is_some_and(|a| {

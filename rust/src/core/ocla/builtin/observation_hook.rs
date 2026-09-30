@@ -1,15 +1,14 @@
-//! BuiltinObservationHook — emits structured observations to OclaBus.
+//! BuiltinObservationHook — keeps structured observations per session.
 //!
-//! Wraps the proxy observation path. Each `observe` call appends to a
-//! bounded per-session ring buffer and emits a CompressionApplied event
-//! (the closest existing event type for observation signals).
+//! Wraps the proxy observation path. Each `observe` call enriches the
+//! observation with delivered tokens and compression ratio, projects file
+//! reads onto the heatmap, and appends to a bounded per-session ring buffer.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 
 use crate::core::ocla::traits::{ObservationHook, OclaService};
 use crate::core::ocla::types::{Observation, OclaCapability, OclaCapabilityKind, OclaResult};
-use crate::core::ocla_bus::{self, OclaEvent};
 use crate::core::savings_ledger::event::SavingsEvent;
 
 const MAX_OBSERVATIONS: usize = 512;
@@ -127,18 +126,6 @@ impl ObservationHook for BuiltinObservationHook {
     async fn observe(&self, mut observation: Observation) -> OclaResult<()> {
         let (original, saved) = Self::enrich(&mut observation);
         let session_id = observation.context.session_id.clone();
-        let name = observation.name.clone();
-        let path = observation
-            .context
-            .content_ref
-            .strip_prefix("file:")
-            .map(str::to_string);
-        let ratio = if original == 0 {
-            0.0
-        } else {
-            saved as f64 / original as f64
-        };
-        let quality_signal = Self::quality_signal_for_compression(ratio);
         Self::project_heatmap(&observation, original, saved);
 
         let mut state = self
@@ -148,20 +135,13 @@ impl ObservationHook for BuiltinObservationHook {
 
         let ring = state
             .ring
-            .entry(session_id.clone())
+            .entry(session_id)
             .or_insert_with(|| VecDeque::with_capacity(MAX_OBSERVATIONS));
 
         if ring.len() >= MAX_OBSERVATIONS {
             ring.pop_front();
         }
         ring.push_back(observation);
-
-        ocla_bus::emit(OclaEvent::CompressionApplied {
-            path,
-            before_tokens: original,
-            after_tokens: original.saturating_sub(saved),
-            strategy: format!("observation:{name};quality:{quality_signal}"),
-        });
 
         Ok(())
     }

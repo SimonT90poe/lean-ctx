@@ -16,6 +16,56 @@ pub(crate) fn current_agent_id() -> &'static str {
     })
 }
 
+/// Identity of this process in the cross-agent delivery registry (#1904).
+///
+/// Unlike [`current_agent_id`] (a stable, shared attribution id), delivery
+/// needs one id per *consumer*: the registry skips records whose `agent_id`
+/// matches the requester, so two consumers sharing an id could never see each
+/// other's deliveries, and a consumer matching a foreign id would be treated as
+/// the reader. `CLAUDECODE` is the constant `"1"` in every Claude Code process
+/// and was used verbatim before, which collapsed all Claude Code clients on a
+/// machine into a single "agent".
+///
+/// Priority (first non-empty wins):
+/// 1. `LEAN_CTX_AGENT_ID` / legacy `LCTX_AGENT_ID` — explicit operator identity,
+///    shared with [`current_agent_id`]
+/// 2. `CURSOR_TASK_ID` — Cursor's per-subagent id
+/// 3. `claude-{pid}` when `CLAUDECODE` is set
+/// 4. `codex-{pid}` when `CODEX_THREAD_ID` is set
+/// 5. `local-{pid}`
+///
+/// Resolved once per process, so the id is stable for the process lifetime.
+#[must_use]
+pub(crate) fn delivery_agent_id() -> &'static str {
+    static CACHE: OnceLock<String> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        resolve_delivery_agent_id(|key| std::env::var(key).ok(), std::process::id())
+    })
+}
+
+/// Pure core of [`delivery_agent_id`]: every input explicit, so the priority
+/// matrix is testable without touching the process environment.
+fn resolve_delivery_agent_id(env: impl Fn(&str) -> Option<String>, pid: u32) -> String {
+    let non_empty = |key: &str| {
+        env(key)
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    if let Some(id) = non_empty("LEAN_CTX_AGENT_ID").or_else(|| non_empty("LCTX_AGENT_ID")) {
+        return id;
+    }
+    if let Some(task) = non_empty("CURSOR_TASK_ID") {
+        return task;
+    }
+    if non_empty("CLAUDECODE").is_some() {
+        return format!("claude-{pid}");
+    }
+    if non_empty("CODEX_THREAD_ID").is_some() {
+        return format!("codex-{pid}");
+    }
+    format!("local-{pid}")
+}
+
 pub(crate) fn get_or_create_keypair(agent_id: &str) -> Result<SigningKey, String> {
     let path = key_path(agent_id)?;
     if path.exists() {
@@ -220,6 +270,52 @@ pub(crate) fn stored_recovery_phrase(agent_id: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn env_of(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let owned: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        move |key| owned.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn delivery_id_two_claude_processes_are_distinct() {
+        // #1904: both processes see CLAUDECODE=1; the id must still differ.
+        let env = env_of(&[("CLAUDECODE", "1")]);
+        let a = resolve_delivery_agent_id(&env, 100);
+        let b = resolve_delivery_agent_id(&env, 200);
+        assert_eq!(a, "claude-100");
+        assert_ne!(a, b, "two Claude Code clients must not share an identity");
+        assert_ne!(a, "1", "the constant CLAUDECODE value is not an identity");
+    }
+
+    #[test]
+    fn delivery_id_priority_matrix() {
+        let explicit = env_of(&[
+            ("LEAN_CTX_AGENT_ID", "ops-agent"),
+            ("CURSOR_TASK_ID", "t1"),
+            ("CLAUDECODE", "1"),
+        ]);
+        assert_eq!(resolve_delivery_agent_id(&explicit, 7), "ops-agent");
+        let legacy = env_of(&[("LCTX_AGENT_ID", "legacy"), ("CLAUDECODE", "1")]);
+        assert_eq!(resolve_delivery_agent_id(&legacy, 7), "legacy");
+        let cursor = env_of(&[("CURSOR_TASK_ID", "t1"), ("CLAUDECODE", "1")]);
+        assert_eq!(resolve_delivery_agent_id(&cursor, 7), "t1");
+        let codex = env_of(&[("CODEX_THREAD_ID", "th")]);
+        assert_eq!(resolve_delivery_agent_id(&codex, 7), "codex-7");
+        assert_eq!(resolve_delivery_agent_id(env_of(&[]), 7), "local-7");
+    }
+
+    #[test]
+    fn delivery_id_ignores_blank_values() {
+        let env = env_of(&[("LEAN_CTX_AGENT_ID", "  "), ("CURSOR_TASK_ID", "")]);
+        assert_eq!(resolve_delivery_agent_id(env, 9), "local-9");
+    }
+
+    #[test]
+    fn delivery_id_is_stable_within_process() {
+        assert_eq!(delivery_agent_id(), delivery_agent_id());
+    }
     #[test]
     fn sign_and_verify_roundtrip() {
         let mut seed = [0u8; 32];

@@ -185,9 +185,9 @@ pub(crate) fn run(args: &[String]) -> i32 {
     let command = match EvidenceCommand::try_parse_from(argv) {
         Ok(command) => command,
         Err(error) => {
-            let code = error.exit_code();
-            eprint!("{error}");
-            return code;
+            // clap routes `--help` to stdout and real parse errors to stderr.
+            let _ = error.print();
+            return error.exit_code();
         }
     };
 

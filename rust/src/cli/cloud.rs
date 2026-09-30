@@ -1014,9 +1014,11 @@ pub fn cmd_buddy(_args: &[String]) {
     println!("Buddy has been removed.");
 }
 
-pub fn cmd_upgrade() {
+/// Deprecated alias for `update`. Arguments are forwarded, so `upgrade --check`
+/// only checks instead of silently installing the latest release (#1906).
+pub fn cmd_upgrade(args: &[String]) {
     println!("'upgrade' has been renamed to 'update'. Running 'lean-ctx update' instead.\n");
-    core::updater::run(&[]);
+    core::updater::run(args);
 }
 
 #[cfg(test)]

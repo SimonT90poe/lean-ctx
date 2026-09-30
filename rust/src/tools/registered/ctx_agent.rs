@@ -21,15 +21,17 @@ impl McpTool for CtxAgentTool {
             status (active|idle|finished), handoff (task+summary), sync (agents+messages+scent),\n\
             claim/release (file/task), brief (sub-agent briefing),\n\
             return (distill→knowledge), diary|recall_diary|diaries (agent journal),\n\
-            share_knowledge|receive_knowledge (cross-agent), list, info.\n\
+            share_knowledge|receive_knowledge (cross-agent), list, info, export, poll_events,\n\
+            lease_acquire/lease_release (message=path or symbol:<name>; release takes category=lease_ref).\n\
+            Leases are machine-wide: every lean-ctx process sharing the data dir sees the same holder.\n\
             ANTIPATTERN: Do not treat this local helper as a durable workflow or a hosted coordination service.",
             json!({
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["register", "list", "post", "read", "status", "info", "handoff", "sync", "claim", "release", "brief", "return", "diary", "recall_diary", "diaries", "share_knowledge", "receive_knowledge|lease_acquire|lease_release", "lease_acquire", "lease_release"],
-                        "description": "register|list|post|read|status|info|handoff|sync|claim|release|brief|return|diary|recall_diary|diaries|share_knowledge|receive_knowledge|lease_acquire|lease_release"
+                        "enum": crate::tools::ctx_agent::ACTIONS,
+                        "description": crate::tools::ctx_agent::ACTIONS.join("|")
                     },
                     "agent_type": {
                         "type": "string",
@@ -55,6 +57,11 @@ impl McpTool for CtxAgentTool {
                         "type": "string",
                         "enum": ["active", "idle", "finished"],
                         "description": "active|idle|finished"
+                    },
+                    "ttl_hours": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "lease_acquire: 0 = 10 min (default), 1 = 1 h"
                     }
                 },
                 "allOf": [
@@ -163,4 +170,45 @@ impl McpTool for CtxAgentTool {
             content_blocks: None,
         })
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CtxAgentTool;
+    use crate::server::tool_trait::McpTool;
+    use crate::tools::ctx_agent::ACTIONS;
+
+    /// #1913: a merged `a|b|c` entry advertised an action no client could send.
+    #[test]
+    fn action_enum_lists_each_dispatched_action_once() {
+        let tool = CtxAgentTool.tool_def();
+        let schema = serde_json::Value::Object((*tool.input_schema).clone());
+        let listed: Vec<&str> = schema["properties"]["action"]["enum"]
+            .as_array()
+            .expect("action enum")
+            .iter()
+            .map(|v| v.as_str().expect("string entry"))
+            .collect();
+        assert_eq!(listed, ACTIONS);
+        let mut unique = listed.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), listed.len(), "no duplicate entries");
+        for action in &listed {
+            assert!(
+                action.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
+                "enum entry {action:?} must be a single action name"
+            );
+            let arm = format!("\"{action}\"");
+            assert!(
+                DISPATCH_SOURCE.lines().any(|line| {
+                    let line = line.trim_start();
+                    line.starts_with(&arm) && line.contains("=>")
+                }),
+                "advertised action {action:?} is not dispatched"
+            );
+        }
+    }
+
+    const DISPATCH_SOURCE: &str = include_str!("../ctx_agent.rs");
 }

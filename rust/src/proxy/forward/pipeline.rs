@@ -15,7 +15,7 @@ use crate::{
         adaptive_policy::select_policy,
         dedup::ContentAddressedDedup,
         determinism_guard,
-        effort_routing::score_complexity,
+        effort_routing::score_session_complexity,
         live_zone::{compress_live_only, detect_live_zone},
         pre_optimize::classify_task,
         prose_compress::{CompressionStrategy, ProseCompressor},
@@ -41,10 +41,11 @@ pub struct PipelineReport {
 }
 
 impl PipelineReport {
-    pub(crate) fn apply_effort_budget(&self, request: &mut Value) {
-        if let Some(complexity) = self.effort_complexity {
-            crate::proxy::effort_routing::apply_effort_budget(request, complexity);
-        }
+    /// Applies the scored effort budget; returns whether the request changed.
+    pub(crate) fn apply_effort_budget(&self, request: &mut Value) -> bool {
+        self.effort_complexity.is_some_and(|complexity| {
+            crate::proxy::effort_routing::inject_effort_budget(request, complexity).1
+        })
     }
 
     pub(crate) fn apply_response_headers(&self, headers: &mut axum::http::HeaderMap) {
@@ -163,11 +164,11 @@ impl CompressionPipeline {
         ));
 
         let effort_started = Instant::now();
-        let effort_complexity = config.enable_effort.then(|| {
-            let mut all_messages = messages.clone();
-            all_messages.extend(live_messages.clone());
-            score_complexity(&all_messages)
-        });
+        // #1912: scored from the untouched opening turn so the injected budget
+        // (a cache-keyed top-level field) stays fixed for the whole session.
+        let effort_complexity = config
+            .enable_effort
+            .then(|| score_session_complexity(&original_messages));
         stages_run.push(stage_report(
             "effort",
             config.enable_effort,

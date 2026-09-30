@@ -78,7 +78,7 @@ fn first_positional(args: &[String]) -> Option<&str> {
 }
 
 fn print_help() {
-    eprintln!(
+    println!(
         "\
 lean-ctx pair \u{2014} pair with leanctx.com for remote benchmarks
 

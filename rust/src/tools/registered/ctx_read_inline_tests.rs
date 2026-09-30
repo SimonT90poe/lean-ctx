@@ -125,10 +125,11 @@ fn per_file_lock_allows_parallel_different_paths() {
     assert!(max_concurrent.load(Ordering::SeqCst) > 1);
 }
 
-/// The primary MCP handler must consult cross-agent delivery only after its
-/// session-local stub miss and before it starts the disk/compression pipeline.
+/// #1909: a content-free delivery recorded by *another* agent in another
+/// conversation must never be served as a stub — the requester's context does
+/// not hold that content. The MCP handler has to fall through to a real read.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mcp_ctx_read_serves_cross_agent_delivery_stub_before_disk_read() {
+async fn mcp_ctx_read_withholds_content_free_cross_agent_stub() {
     use crate::core::cache::SessionCache;
     use crate::core::ocla::OclaRegistry;
     use crate::core::ocla::types::DeliveryEntry;
@@ -136,35 +137,28 @@ async fn mcp_ctx_read_serves_cross_agent_delivery_stub_before_disk_read() {
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
+    if !crate::core::conversation::scope_enabled() {
+        return; // legacy mode keeps content-free stubs by contract
+    }
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("cross-agent-mcp.rs");
     std::fs::write(&file, "fn only_the_remote_agent_read_this() {}\n").unwrap();
     let path = file.to_string_lossy().to_string();
-    let bytes = std::fs::read(&file).unwrap();
-    let hash = blake3::hash(&bytes);
-    let mut blake3_prefix = [0u8; 12];
-    blake3_prefix.copy_from_slice(&hash.as_bytes()[..12]);
-    let mtime = std::fs::metadata(&file)
-        .unwrap()
-        .modified()
-        .unwrap()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let requester = std::env::var("CURSOR_TASK_ID")
-        .or_else(|_| std::env::var("CLAUDECODE"))
-        .unwrap_or_else(|_| "local-agent".to_string());
-    let remote_agent = format!("{requester}-remote");
+    let fp = crate::tools::ctx_read::file_blake3_prefix(&path).unwrap();
+    let remote_agent = format!(
+        "{}-remote",
+        crate::core::agent_identity::delivery_agent_id()
+    );
     OclaRegistry::global()
         .delivery_registry
         .record_delivery(DeliveryEntry {
-            blake3: blake3_prefix,
+            blake3: fp.hash,
             path: path.clone(),
-            line_count: 1,
+            line_count: fp.line_count,
             token_count: 12,
             agent_id: remote_agent.clone(),
             conversation_id: remote_agent,
-            mtime,
+            mtime: fp.mtime,
             relay_content: None,
             relay_mode: None,
         });
@@ -176,19 +170,24 @@ async fn mcp_ctx_read_serves_cross_agent_delivery_stub_before_disk_read() {
         session: Some(Arc::new(RwLock::new(SessionState::new()))),
         ..ToolContext::default()
     };
-    let args = json!({ "path": path, "mode": "auto" })
-        .as_object()
-        .unwrap()
-        .clone();
-
-    let output = tokio::task::block_in_place(|| CtxReadTool.handle(&args, &ctx))
-        .expect("ctx_read must serve the cross-agent delivery stub");
-    assert!(output.text.contains("[cross-agent"), "got: {}", output.text);
-    assert!(
-        !output.text.contains("only_the_remote_agent_read_this"),
-        "cross-agent hit must return before disk content is read: {}",
-        output.text
-    );
+    for mode in ["auto", "signatures"] {
+        let args = json!({ "path": path, "mode": mode, "fresh": mode == "signatures" })
+            .as_object()
+            .unwrap()
+            .clone();
+        let output = tokio::task::block_in_place(|| CtxReadTool.handle(&args, &ctx))
+            .expect("ctx_read must succeed");
+        assert!(
+            !output.text.contains("[cross-agent"),
+            "mode={mode}: content-free stub leaked: {}",
+            output.text
+        );
+        assert!(
+            output.text.contains("only_the_remote_agent_read_this"),
+            "mode={mode}: requester must receive the content: {}",
+            output.text
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

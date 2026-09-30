@@ -5,6 +5,70 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — proxy keeps the prompt-cache prefix byte-stable (#1912)
+
+- Effort routing no longer busts the Anthropic cache: the complexity score is
+  session-stable, so the injected `thinking` block stays identical across
+  turns. The thinking budget is capped at half of `max_tokens`, so requests
+  with `max_tokens` below 2048 get no injection. A client-set OpenAI
+  `reasoning_effort` is never overridden.
+- When a guard reverts the compression, or nothing changed, the proxy forwards
+  the client's original bytes instead of a re-serialized body. gzip/zstd
+  bodies are re-encoded correctly after a rewrite.
+- Compressing the system prompt of a warm (client-cached) conversation is now
+  priced: it only happens when the per-turn cache-read saving repays the
+  one-off cache re-write within the conversation's observed length. Once a
+  conversation is compressed, it stays compressed, so the prefix never flips.
+- Model prices come from the current pricing table (Opus 4.5: $5/M input)
+  instead of a stale hard-coded list.
+- Docs: removed the unmeasured "~5-15% extra savings" claim; OpenAI caching
+  discounts are now described as "up to 90% on GPT-5-family".
+
+### Fixed — `ctx_read` stubs only claim content the caller actually has (#1904, #1909)
+
+- Every Claude Code process has `CLAUDECODE=1`, and that constant was used as
+  the cross-agent delivery id, so all Claude Code clients on a machine counted
+  as one agent. Delivery now uses its own per-process id: `LEAN_CTX_AGENT_ID`,
+  then `CURSOR_TASK_ID`, then `claude-<pid>`, `codex-<pid>` or `local-<pid>`.
+- A content-free cross-agent stub ("already in your context") is only served
+  when the delivery provably reached the caller's conversation. Agent B in a
+  new conversation now gets the content, never a stub pointing at agent A's
+  context. Relayed content is only reused for the view that was asked for, so
+  a `signatures` request is never answered with a `map`.
+- The MCP path recorded deliveries with a hard-coded line count of `0`. CLI,
+  daemon and MCP now record the same content snapshot.
+- Under Claude Code, sub-agents share their parent's lean-ctx process, so a
+  process scope cannot tell which agent is asking. Re-read stubs are withheld
+  there and each re-read returns the (compressed) content. `LEAN_CTX_SCOPE`
+  opts back in for integrations that run one agent per process. The
+  CLAUDE.md block (v10) drops the "re-reads ~13 tokens" claim.
+
+### Security — `lean-ctx read` is jailed like `ctx_read`; `--help` never runs a command (#1901, #1903, #1906)
+
+- `lean-ctx read` enforces the same boundary as MCP `ctx_read`, with the same
+  error text: the PathJail (project root, `allow_paths`, extra and read-only
+  roots, the lean-ctx state dir) and the secret-path policy. Before, it read
+  files outside the project with only a warning. A relative path resolves
+  against the current directory. A broad root (home, `/`, an agent config
+  dir) is refused unless `path_jail = false`.
+- Shell-hook rewrites leave a `cat` that the jailed read would refuse on the
+  native command, so a working command never turns into an access error.
+- A git worktree under `<repo>/.claude/worktrees/<name>` counts as a project,
+  not as agent config.
+- `lean-ctx <command> --help` prints help and never runs the command. Before,
+  `pack --help` built a PR pack, `secure --help` rewrote the config,
+  `proof --help` wrote proof artifacts, `skillify --help` generated rules and
+  `upgrade --help` installed a release. The dispatcher now answers `--help`
+  centrally from the `help all` reference. It passes the flag on only to
+  handlers whose own help is verified side-effect free, and a test fails when
+  a new command is left unclassified.
+- `upgrade` forwards its arguments to `update`, so `upgrade --check` only
+  checks.
+- `init --agent claude` no longer stacks another solution-rules block on
+  every run when CLAUDE.md prose mentions the `<!-- lean-ctx -->` marker. Only
+  whole marker lines count as blocks, and a strip removes the solution block
+  together with the lean-ctx block.
+
 ### Fixed — quality claims match what the gates can show (#1905)
 
 - `lean-ctx eval ab` reports now print `POWER: underpowered` when a run has
@@ -54,6 +118,58 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   the secret check is always on there.
 - Not yet: `--compress`, `--truncate`, `--strip-comments`, `--trim-base64`,
   `--show-line-numbers`.
+
+### Removed — 24 core modules that no code path used (#1923)
+
+- These `lean_ctx::core` modules had no caller in the binary, the tests, the
+  benches, the other workspace crates or `lean-ctx-sdk`; they were compiled
+  and shipped, but never ran:
+  - `adaptive_chunking`, `cognitive_load`, `graph_features`,
+    `progressive_compression`, `structural_diff`, `structural_tokenizer` —
+    listed as added "Context Runtime research modules" in an earlier release;
+    no read, search or compression path ever called them.
+  - `adaptive_compression`, `agent_attribution`, `cache_diagnostics`,
+    `chain_compression`, `content_handle`, `cross_customer_learning`,
+    `delta_response`, `evidence_classification`, `evidence_flow`,
+    `execution_ledger`, `fleet_analytics`, `json_sample`,
+    `negative_knowledge`, `query_aware`, `rule_scorer`, `session_budget`,
+    `token_calibration`, `work_graph`.
+- About 12,500 lines less to build and maintain. No CLI command, MCP tool,
+  config key or contract changes. Rust embedders that imported one of these
+  paths directly must drop the import; `crate::engine::ContextEngine` and
+  `lean-ctx-sdk` are the supported embedding surfaces.
+- `rust/LOCK_ORDERING.md` drops lock L88 (`HANDLES`), which lived in the
+  removed `content_handle`.
+- `predictive_prefetch`, `multiscale_index` and `context_column` are removed
+  as well. Only tests referenced them; those tests went with them, and the
+  rest of `neuro_physics_scenarios.rs` and `context_cortex_phase1.rs` stays.
+  `ctx_prefetch` never used `predictive_prefetch`.
+- Kept on purpose: `ocp` is the documented Open Context Protocol export
+  adapter (schemas in `docs/contracts/ocp/`), a library boundary even though
+  no binary path calls it. Still open: `solution_rules` and `solution_types`,
+  which sit next to the Pro code and need that work first.
+
+### Fixed — the agent surface advertises only what actually works (#1913)
+
+- `/.well-known/agent.json` and `/.well-known/mcp-server.json` list only tools
+  that are callable through `tools/list` and `/v1/tools`, and a test holds the
+  three in sync. The agent card's authentication schemes now match what `/a2a`
+  enforces.
+- `/a2a` no longer takes the sender from `message.role`, so `"role":"user"` is
+  never recorded as an agent id. `message/send` is supported, and
+  `tasks/cancel` is refused for a task the caller does not own.
+- `ctx_agent` leases live in `<data_dir>/agents/leases.json` under a file lock.
+  A second lean-ctx process gets `Lease HELD` for a path another agent holds.
+  Before, each MCP server had its own in-memory table. A corrupt lease store
+  fails closed instead of handing out held resources.
+- The `ctx_agent` action enum had a merged
+  `receive_knowledge|lease_acquire|lease_release` entry and was missing
+  `export` and `poll_events`. The enum now comes from the dispatcher's action
+  list, and the schema documents `ttl_hours`.
+- Removed `OclaBus` and its event schema. It was never enabled, so every emit
+  was a no-op that production could not observe.
+- The self-pilot evidence reports its 43 agents as registered identities, not
+  as agent-bus coordination.
 
 ### Fixed — Windows: a timed-out or cancelled command no longer leaves processes behind (#1920)
 

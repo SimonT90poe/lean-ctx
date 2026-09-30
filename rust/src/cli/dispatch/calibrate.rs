@@ -703,7 +703,7 @@ fn connector_matches(requested: &str, detected: &str) -> bool {
 }
 
 fn print_help() {
-    eprintln!(
+    println!(
         "\
 lean-ctx calibrate — find the optimal Performance Profile
 

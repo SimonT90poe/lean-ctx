@@ -5,9 +5,7 @@
 //! 2. HNSW Dense Search Performance (ANN Theory)
 //! 3. BM25 Score Array Optimization (Kolmogorov)
 //! 4. Hebbian Cache + Boltzmann Eviction (Statistical Physics)
-//! 5. Predictive Prefetch (Free Energy Principle)
-//! 6. Homeostasis Memory Guard (Biology)
-//! 8. Multi-Scale Index (Renormalization Group)
+//! 5. Homeostasis Memory Guard (Biology)
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. SHELL ALLOWLIST — Real attack scenarios
@@ -337,92 +335,6 @@ mod hebbian_boltzmann {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 4. PREDICTIVE PREFETCH (Free Energy Principle)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-mod predictive_prefetch {
-    use lean_ctx::core::predictive_prefetch::PrefetchModel;
-
-    #[test]
-    fn scenario_learns_edit_save_test_cycle() {
-        let mut model = PrefetchModel::new();
-        let src = 100u64;
-        let test = 200u64;
-
-        for _ in 0..100 {
-            model.observe(src);
-            model.observe(test);
-        }
-
-        // After accessing src, should predict test
-        let predictions = model.predict(src, &[]);
-        assert!(
-            predictions.iter().any(|(h, _)| *h == test),
-            "Should predict test file after source, got: {predictions:?}"
-        );
-    }
-
-    #[test]
-    fn scenario_accuracy_improves_with_feedback() {
-        let mut model = PrefetchModel::new();
-
-        for i in 0..30 {
-            model.report_hit(i, true);
-        }
-        let high_acc = model.accuracy();
-
-        for i in 30..50 {
-            model.report_hit(i, false);
-        }
-        let lower_acc = model.accuracy();
-
-        assert!(high_acc > lower_acc, "Accuracy should decrease with misses");
-    }
-
-    #[test]
-    fn scenario_free_energy_reflects_surprise() {
-        let mut model = PrefetchModel::new();
-
-        for i in 0..20 {
-            model.report_hit(i, true);
-        }
-        let low_fe = model.free_energy();
-        assert!(
-            low_fe < 0.1,
-            "Low surprise should mean low free energy, got {low_fe}"
-        );
-
-        let mut bad_model = PrefetchModel::new();
-        for i in 0..20 {
-            bad_model.report_hit(i, false);
-        }
-        let high_fe = bad_model.free_energy();
-        assert!(
-            high_fe > 0.9,
-            "High surprise should mean high free energy, got {high_fe}"
-        );
-    }
-
-    #[test]
-    fn scenario_excludes_already_active_files() {
-        let mut model = PrefetchModel::new();
-        let a = 1u64;
-        let b = 2u64;
-
-        for _ in 0..50 {
-            model.observe(a);
-            model.observe(b);
-        }
-
-        let predictions = model.predict(a, &[b]);
-        assert!(
-            !predictions.iter().any(|(h, _)| *h == b),
-            "Already-active file should not be predicted"
-        );
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // 5. HOMEOSTASIS MEMORY GUARD
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -498,115 +410,6 @@ mod homeostasis {
         let mut ctrl = HomeostasisController::new(100_000);
         let action = ctrl.evaluate(96_000);
         assert_eq!(action, HomeostasisAction::EmergencyDrop);
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// 7. MULTI-SCALE INDEX (Renormalization)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-mod multiscale {
-    use lean_ctx::core::bm25_index::{ChunkKind, CodeChunk};
-    use lean_ctx::core::multiscale_index::*;
-
-    fn chunk(path: &str, tokens: &[&str]) -> CodeChunk {
-        CodeChunk {
-            file_path: path.to_string(),
-            symbol_name: "fn".to_string(),
-            kind: ChunkKind::Function,
-            start_line: 1,
-            end_line: 10,
-            content: tokens.join(" "),
-            tokens: tokens.iter().map(|s| (*s).to_string()).collect(),
-            token_count: tokens.len(),
-        }
-    }
-
-    #[test]
-    fn scenario_auth_module_search_at_meso_scale() {
-        let chunks = vec![
-            chunk(
-                "src/auth/login.rs",
-                &["authenticate", "user", "password", "hash", "bcrypt"],
-            ),
-            chunk(
-                "src/auth/session.rs",
-                &["session", "token", "jwt", "validate", "expire"],
-            ),
-            chunk(
-                "src/auth/middleware.rs",
-                &["middleware", "auth", "guard", "protect", "route"],
-            ),
-            chunk(
-                "src/db/pool.rs",
-                &["connection", "pool", "postgres", "query", "execute"],
-            ),
-            chunk(
-                "src/db/migrations.rs",
-                &["migration", "schema", "alter", "table", "column"],
-            ),
-            chunk(
-                "src/api/routes.rs",
-                &["route", "handler", "get", "post", "response"],
-            ),
-        ];
-
-        let index = MultiScaleIndex::build_from_chunks(&chunks);
-
-        let results = index.search_meso(&["auth".to_string(), "login".to_string()], 3);
-        assert!(!results.is_empty());
-        assert!(
-            results[0].0.contains("auth"),
-            "Top meso result should be an auth file, got: {}",
-            results[0].0
-        );
-    }
-
-    #[test]
-    fn scenario_architecture_search_at_macro_scale() {
-        let chunks = vec![
-            chunk("src/auth/login.rs", &["authenticate", "user", "jwt"]),
-            chunk("src/auth/session.rs", &["session", "token", "refresh"]),
-            chunk("src/db/pool.rs", &["database", "connection", "pool"]),
-            chunk("src/db/query.rs", &["query", "sql", "execute"]),
-            chunk("src/api/handler.rs", &["handler", "request", "response"]),
-        ];
-
-        let index = MultiScaleIndex::build_from_chunks(&chunks);
-
-        let results = index.search_macro(&["database".to_string(), "query".to_string()], 3);
-        assert!(!results.is_empty());
-        assert!(
-            results[0].0.contains("db"),
-            "Top macro result should be src/db, got: {}",
-            results[0].0
-        );
-    }
-
-    #[test]
-    fn scenario_query_type_determines_entry_scale() {
-        use lean_ctx::core::search_reranking::QueryType;
-
-        assert_eq!(
-            MultiScaleIndex::entry_scale(&QueryType::Symbol),
-            Scale::Micro
-        );
-        assert_eq!(
-            MultiScaleIndex::entry_scale(&QueryType::NaturalLanguage),
-            Scale::Meso
-        );
-        assert_eq!(
-            MultiScaleIndex::entry_scale(&QueryType::Architecture),
-            Scale::Macro
-        );
-    }
-
-    #[test]
-    fn scenario_empty_project_handles_gracefully() {
-        let index = MultiScaleIndex::build_from_chunks(&[]);
-        assert!(index.meso_files.is_empty());
-        assert!(index.macro_dirs.is_empty());
-        assert!(index.search_meso(&["anything".to_string()], 5).is_empty());
     }
 }
 

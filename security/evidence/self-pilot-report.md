@@ -10,7 +10,7 @@
 | Output Tokens | 103.7M |
 | Tokens Saved | 84.7M (45.0%) |
 | Shell Commands | 121,338 |
-| Registered Agents | 43 |
+| Registered Agent Identities | 43 |
 
 ## Coverage Classes
 
@@ -19,7 +19,7 @@
 | File Reads | ctx_read modes recorded: , aggressive, cat-redirect, compose, full, info, lines:-20, lines:-30, lines:1-10000, lines:1-130,130-260,260-520, lines:1-180,180-380,380-560, lines:1-280, lines:1-390, lines:1-80, lines:1200-1575, lines:155-250,800-890, lines:330-455,670-710,1160-1325, lines:36-270, lines:380-440, lines:60-100,510-570,730-780, lines:730-870, list, map, post, raw, read, remember, signatures, task |
 | Shell Commands | 121,338 commands recorded by lean-ctx stats |
 | Code Search | ctx_search grep/symbol/semantic |
-| Multi-Agent | 43 registered agents from the agent bus |
+| Multi-Agent | 43 registered agent identities (identity registry; not a measure of agent-bus coordination) |
 | Proxy Interception | Not detected; stream-aware accounting tracked 24,042 results |
 
 ## Compression by Read Mode
@@ -58,4 +58,4 @@
 
 ## Gate Verdict
 
-G9 Self-Pilot: **PASS** — requires at least 7 days of continuous, measured self-pilot usage plus non-zero sessions and token traffic. This report uses only the live `lean-ctx stats json` and agent-bus output captured at generation time.
+G9 Self-Pilot: **PASS** — requires at least 7 days of continuous, measured self-pilot usage plus non-zero sessions and token traffic. This report uses only the live `lean-ctx stats json` and `lean-ctx agent list --json` output captured at generation time.

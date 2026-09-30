@@ -635,7 +635,7 @@ methodology: [bench/agent-task/r2](bench/agent-task/r2/README.md)).
 
 Accuracy is gated, within stated limits. A model-free A/B gate checks that the JSON
 crusher keeps every gold answer in its fixtures while cutting tokens, and proxy
-rewrites are byte-stable by contract, so Anthropic (90%) / OpenAI (50%) prompt-cache
+rewrites are byte-stable by contract, so Anthropic (90%) / OpenAI (up to 90% on GPT-5-family) prompt-cache
 discounts survive compression. The **off-vs-on testbench** (`lean-ctx eval testbench`)
 runs pinned real repos through a raw-dump baseline and through lean-ctx at an
 identical token budget, grades free-form QA with an LLM judge and code with each

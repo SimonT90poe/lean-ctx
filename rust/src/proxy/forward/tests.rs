@@ -978,6 +978,85 @@ fn relay_test_state() -> ProxyState {
     }
 }
 
+/// Stub upstream that answers `200 {}` and yields the exact request body
+/// bytes it received, so a test can assert byte-identity on the wire.
+async fn upstream_capturing_body() -> (String, tokio::task::JoinHandle<Vec<u8>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        let header_end = loop {
+            let read = stream.read(&mut buffer).await.unwrap();
+            request.extend_from_slice(&buffer[..read]);
+            if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                break end + 4;
+            }
+        };
+        let header = String::from_utf8_lossy(&request[..header_end]).to_lowercase();
+        let content_length = header
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length: "))
+            .unwrap()
+            .trim()
+            .parse::<usize>()
+            .unwrap();
+        while request.len() < header_end + content_length {
+            let read = stream.read(&mut buffer).await.unwrap();
+            request.extend_from_slice(&buffer[..read]);
+        }
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}")
+            .await
+            .unwrap();
+        request[header_end..header_end + content_length].to_vec()
+    });
+    (format!("http://{address}"), server)
+}
+
+/// #1912: a request the proxy does not change must reach the provider as the
+/// client's exact bytes. Re-serializing reorders keys and rewrites number and
+/// whitespace formatting, which moves the prompt-cache prefix every turn.
+#[tokio::test]
+async fn unchanged_request_is_forwarded_byte_identical() {
+    let _iso = crate::core::data_dir::isolated_data_dir();
+    let (upstream, server) = upstream_capturing_body().await;
+    // Key order, spacing and `1.0` all differ from serde_json's canonical form.
+    let raw = br#"{ "temperature": 1.0,  "model": "claude-sonnet-4-5",
+  "messages": [ {"role": "user", "content": "hi"} ] }"#
+        .to_vec();
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/messages")
+        .header(CONTENT_TYPE, "application/json")
+        .body(Body::from(raw.clone()))
+        .unwrap();
+
+    let response = forward_request(
+        State(relay_test_state()),
+        request,
+        &upstream,
+        "/v1/messages",
+        |value, original_size| {
+            let out = serde_json::to_vec(&value).unwrap();
+            let size = out.len();
+            (out, original_size, size)
+        },
+        "Anthropic",
+        &[],
+    )
+    .await
+    .unwrap();
+    assert!(response.status().is_success());
+
+    assert_eq!(
+        server.await.unwrap(),
+        raw,
+        "an unchanged request must be forwarded as the client's exact bytes"
+    );
+}
+
 #[test]
 fn forwards_opencode_session_header() {
     // #1752: OpenCode (and OpenCode zen) key session affinity off their own

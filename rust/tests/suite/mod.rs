@@ -13,6 +13,7 @@ mod benchmark_compare_integration;
 mod capabilities_contract_up_to_date;
 mod cli_anti_inflation;
 mod cli_characterization;
+mod cli_help_safety_1906;
 mod cloud_pro_features_e2e;
 mod compaction_cache_scenarios;
 mod compaction_survival_tests;

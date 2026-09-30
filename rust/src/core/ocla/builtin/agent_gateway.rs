@@ -1,8 +1,7 @@
 //! BuiltinAgentGateway — validates and relays agent-to-agent envelopes.
 //!
-//! Wraps `core/a2a/` behind the OCLA trait. Validates envelope fields,
-//! emits AgentChainEvent to OclaBus, and returns the envelope with the
-//! relay_id confirmed. Budget enforcement is checked but not consumed
+//! Wraps `core/a2a/` behind the OCLA trait. Validates envelope fields and
+//! returns the envelope with the relay_id confirmed. Budget enforcement is checked but not consumed
 //! (consumption happens at the transport layer).
 
 use chrono::Utc;
@@ -17,7 +16,6 @@ use crate::core::ocla::traits::{AgentGateway, OclaService};
 use crate::core::ocla::types::{
     AgentEnvelope, AgentMessageRequest, OclaCapability, OclaCapabilityKind, OclaError, OclaResult,
 };
-use crate::core::ocla_bus::{self, OclaEvent};
 
 pub struct BuiltinAgentGateway {
     remote: Option<RemoteTransport>,
@@ -212,36 +210,9 @@ impl AgentGateway for BuiltinAgentGateway {
         }
 
         if !Self::is_local_target(&envelope.to_agent_id) && self.is_remote_available() {
-            ocla_bus::emit(OclaEvent::AgentChainEvent {
-                agent_id: envelope.from_agent_id.clone(),
-                action: "remote_relay_attempt".to_string(),
-                parent_agent: Some(envelope.to_agent_id.clone()),
-            });
-            return match self.try_remote_relay(&envelope) {
-                Ok(confirmed) => {
-                    ocla_bus::emit(OclaEvent::AgentChainEvent {
-                        agent_id: envelope.from_agent_id.clone(),
-                        action: "remote_relay_succeeded".to_string(),
-                        parent_agent: Some(envelope.to_agent_id.clone()),
-                    });
-                    Ok(confirmed)
-                }
-                Err(error) => {
-                    ocla_bus::emit(OclaEvent::AgentChainEvent {
-                        agent_id: envelope.from_agent_id.clone(),
-                        action: "remote_relay_failed".to_string(),
-                        parent_agent: Some(envelope.to_agent_id.clone()),
-                    });
-                    Err(error)
-                }
-            };
+            // Failures land in the dead-letter queue inside try_remote_relay.
+            return self.try_remote_relay(&envelope);
         }
-
-        ocla_bus::emit(OclaEvent::AgentChainEvent {
-            agent_id: envelope.from_agent_id.clone(),
-            action: "relay".to_string(),
-            parent_agent: Some(envelope.to_agent_id.clone()),
-        });
 
         Ok(envelope)
     }
