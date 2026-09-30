@@ -12,6 +12,9 @@ fn lean_ctx() -> Command {
     cmd.env("LEAN_CTX_ACTIVE", "1");
     cmd.env("HOME", "/tmp/lean-ctx-cli-test");
     cmd.env("LEAN_CTX_DISABLED", "1");
+    // Tool-backed subcommands (graph, overview, heatmap, …) otherwise auto-start
+    // a daemon that indexes the repo and outlives the test run as an orphan.
+    cmd.env("__LEAN_CTX_NO_DAEMON", "1");
     cmd
 }
 
