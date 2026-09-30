@@ -62,6 +62,23 @@ fn add(cmds: &[String]) {
     println!("Allowed (additive): {}", added.join(", "));
     println!("These are merged on top of the defaults — nothing else was removed.");
     println!("Takes effect immediately; no MCP/daemon restart needed.");
+
+    // GH #1419 follow-up: warn (don't refuse) when the new entry is shadowed
+    // by a broader one already in effect — e.g. the default "git" makes
+    // `lean-ctx allow "git status"` scope nothing. The entry is still
+    // written; the warning only informs.
+    let effective = shell_allowlist::effective_allowlist_pub();
+    for cmd in &added {
+        if let Some(covering) = shell_allowlist::shadowing_entry(&effective, cmd) {
+            println!(
+                "  \x1b[33m⚠ '{cmd}' has no effect — it's already covered by '{covering}'.\x1b[0m"
+            );
+            println!(
+                "    To scope a default binary like '{covering}', replace `shell_allowlist` \
+                 directly — `shell_allowlist_extra` can only add, never narrow."
+            );
+        }
+    }
     print_effective();
 }
 
@@ -183,6 +200,12 @@ fn print_usage() {
          \n\
          Why this exists: editing `shell_allowlist` replaces the whole built-in list.\n\
          `lean-ctx allow` appends to `shell_allowlist_extra`, keeping git/cargo/npm/… intact.\n\
+         \n\
+         Entry grammar: one or more words, optionally ending in a lone `*`.\n\
+         A single word (\"cargo\") always allows any subcommand/args. A multi-word\n\
+         entry with no `*` (\"git status\") matches that exact command only. A\n\
+         trailing `*` (\"terraform plan *\") matches that subcommand plus any\n\
+         (or no) further arguments.\n\
          Example: lean-ctx allow acli"
     );
     print_effective();

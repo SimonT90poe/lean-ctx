@@ -196,6 +196,7 @@ impl Default for Config {
             shell_allowlist: default_shell_allowlist(),
             shell_allowlist_extra: Vec::new(),
             shell_strict_mode: false,
+            shell_allowlist_subcommand_scoping: true,
             shell_security: None,
             shell_timeout_secs: None,
             shell_heavy_timeout_secs: None,

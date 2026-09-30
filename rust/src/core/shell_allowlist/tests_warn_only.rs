@@ -4,7 +4,7 @@ use super::{allowlist_block_message, warn_only_reason};
 /// not carry the enforce wording that tells the agent it was stopped for good.
 #[test]
 fn gh1874_warn_only_reason_drops_the_enforce_wording() {
-    let message = allowlist_block_message("pdfinfo");
+    let message = allowlist_block_message("pdfinfo", &[], &[]);
     assert_eq!(
         warn_only_reason(&message),
         "'pdfinfo' is not in the shell allowlist."

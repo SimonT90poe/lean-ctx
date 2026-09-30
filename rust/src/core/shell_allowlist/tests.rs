@@ -59,12 +59,15 @@ fn extract_multiple_env_vars() {
 
 // --- All-segments validation tests ---
 
-pub(crate) fn allow(cmds: &[&str]) -> Vec<String> {
-    cmds.iter().map(std::string::ToString::to_string).collect()
+pub(crate) fn allow(cmds: &[&str]) -> Allowlist {
+    Allowlist::new(
+        cmds.iter().map(std::string::ToString::to_string).collect(),
+        true,
+    )
 }
 #[test]
 fn allowlist_empty_always_passes() {
-    assert!(check_all_segments("anything", &[]).is_ok());
+    assert!(check_all_segments("anything", &allow(&[])).is_ok());
 }
 #[test]
 fn allowlist_blocks_unlisted() {
@@ -284,7 +287,9 @@ fn allows_gh_issue_create_with_heredoc_body_containing_create() {
 text with replace_symbol/create/replace_all
 EOF
 )""#;
-    assert!(check_all_segments(cmd, &crate::core::config::default_shell_allowlist()).is_ok());
+    assert!(
+        check_all_segments(cmd, &crate::core::config::default_shell_allowlist().into()).is_ok()
+    );
 }
 
 #[test]
@@ -293,7 +298,9 @@ fn allows_gh_heredoc_body_with_parentheses() {
 see [link](http://example.com) for details
 EOF
 )""#;
-    assert!(check_all_segments(cmd, &crate::core::config::default_shell_allowlist()).is_ok());
+    assert!(
+        check_all_segments(cmd, &crate::core::config::default_shell_allowlist().into()).is_ok()
+    );
 }
 
 #[test]
@@ -395,7 +402,7 @@ fn error_message_contains_do_not_retry() {
 fn block_message_offers_additive_allow() {
     // #341: the block message must point users at the additive `lean-ctx allow`
     // path (not "edit shell_allowlist", which replaces the whole default list).
-    let msg = allowlist_block_message("acli");
+    let msg = allowlist_block_message("acli", &[], &[]);
     assert!(
         msg.contains("lean-ctx allow acli"),
         "must offer the additive fix: {msg}"
@@ -1224,7 +1231,7 @@ fn break_continue_return_and_bracket_test_are_default_allowed() {
         "'seq' should be in the default shell allowlist"
     );
     // Builtins pass check_all_segments even with an empty allowlist.
-    let minimal = vec!["git".to_string()];
+    let minimal = allow(&["git"]);
     for cmd in ["[", "break", "continue", "return"] {
         assert!(
             check_all_segments(cmd, &minimal).is_ok(),
@@ -1342,7 +1349,7 @@ fn heredoc_delims_mixed_quoted_unquoted() {
 #[test]
 fn read_only_process_inspection_pipeline_is_default_allowed() {
     let defaults = crate::core::config::default_shell_allowlist();
-    let result = check_all_segments("pgrep -af lean-ctx | head -n 5", &defaults);
+    let result = check_all_segments("pgrep -af lean-ctx | head -n 5", &defaults.into());
     assert!(
         result.is_ok(),
         "read-only diagnostic pipeline must pass: {result:?}"
@@ -1354,7 +1361,7 @@ fn read_only_process_inspection_pipeline_is_default_allowed() {
 /// #1022: POSIX builtins bypass the allowlist entirely.
 #[test]
 fn builtin_exit_bypasses_allowlist() {
-    let allowlist = vec!["git".to_string()];
+    let allowlist = allow(&["git"]);
     let result = check_all_segments("exit 0", &allowlist);
     assert!(
         result.is_ok(),
@@ -1365,7 +1372,7 @@ fn builtin_exit_bypasses_allowlist() {
 /// #1022: `command -v` is a builtin used for detection.
 #[test]
 fn builtin_command_v_bypasses_allowlist() {
-    let allowlist = vec!["git".to_string()];
+    let allowlist = allow(&["git"]);
     let result = check_all_segments("command -v cargo", &allowlist);
     assert!(
         result.is_ok(),
@@ -1376,7 +1383,7 @@ fn builtin_command_v_bypasses_allowlist() {
 /// #1022: `eval` remains unconditionally blocked even though builtins pass.
 #[test]
 fn eval_still_blocked_despite_builtins() {
-    let allowlist = vec!["git".to_string(), "eval".to_string()];
+    let allowlist = allow(&["git", "eval"]);
     let result = check_all_segments("eval 'rm -rf /'", &allowlist);
     assert!(result.is_err(), "eval must remain blocked");
 }
@@ -1384,7 +1391,7 @@ fn eval_still_blocked_despite_builtins() {
 /// #1022: pipeline with builtins — no segment should fail due to builtins.
 #[test]
 fn pipeline_with_builtin_segments_passes() {
-    let allowlist = vec!["seq".to_string(), "head".to_string()];
+    let allowlist = allow(&["seq", "head"]);
     let result = check_all_segments("seq 1 10 | exit 7 | echo done", &allowlist);
     assert!(
         result.is_ok(),
@@ -1414,7 +1421,7 @@ fn kill_in_default_allowlist() {
 #[test]
 fn kill_passes_segment_check() {
     let defaults = crate::core::config::default_shell_allowlist();
-    let result = check_all_segments("kill 12345", &defaults);
+    let result = check_all_segments("kill 12345", &defaults.into());
     assert!(result.is_ok(), "kill must pass: {result:?}");
 }
 

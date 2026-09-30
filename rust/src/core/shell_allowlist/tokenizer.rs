@@ -446,19 +446,26 @@ fn split_with_separators(command: &str) -> Vec<(&str, Option<Separator>)> {
     segments
 }
 
-/// Extract the base command name from a single segment (no operators).
-pub(super) fn extract_base_from_segment(segment: &str) -> String {
+/// Extract normalized command tokens from a single segment (no operators):
+/// skip env assignments, skip a PowerShell assignment, return empty for a
+/// PowerShell value expression, skip a leading `{` brace-group token (#939 —
+/// lean-ctx's own agent wrapper emits this form), and take the basename of
+/// the first token. Shared by `extract_base_from_segment` (which returns just
+/// the first token) and the subcommand-scoped allowlist matcher (which needs
+/// the rest of the tokens too), so the two normalizations cannot drift
+/// (GH #1419 follow-up).
+pub(super) fn extract_command_tokens_from_segment(segment: &str) -> Vec<String> {
     let trimmed = segment.trim();
     if trimmed.is_empty() {
-        return String::new();
+        return Vec::new();
     }
 
     let cmd_part = skip_powershell_assignment(skip_env_assignments(trimmed));
     if cmd_part.is_empty() {
-        return String::new();
+        return Vec::new();
     }
     if is_powershell_value_expression(cmd_part) {
-        return String::new();
+        return Vec::new();
     }
 
     let tokens = shell_tokenize(cmd_part);
@@ -466,17 +473,29 @@ pub(super) fn extract_base_from_segment(segment: &str) -> String {
     // `agent_wrapper::rebuild`'s `{ <real command>\n} && pwd ...` wrapping)
     // is not itself a command — skip it so the base extracted is the real
     // command inside the group, not the brace.
-    let mut token_iter = tokens.iter();
-    let first_token = match token_iter.next().map(String::as_str) {
-        Some("{") => token_iter.next().map_or("", String::as_str),
-        other => other.unwrap_or(""),
+    let mut token_iter = tokens.into_iter();
+    let first_token = match token_iter.next() {
+        Some(t) if t == "{" => token_iter.next(),
+        other => other,
     };
-
-    first_token
+    let Some(first_token) = first_token else {
+        return Vec::new();
+    };
+    let basename = first_token
         .rsplit('/')
         .next()
-        .unwrap_or(first_token)
-        .to_string()
+        .unwrap_or(&first_token)
+        .to_string();
+
+    std::iter::once(basename).chain(token_iter).collect()
+}
+
+/// Extract the base command name from a single segment (no operators).
+pub(super) fn extract_base_from_segment(segment: &str) -> String {
+    extract_command_tokens_from_segment(segment)
+        .into_iter()
+        .next()
+        .unwrap_or_default()
 }
 
 /// Skip a local PowerShell assignment (`$result = Get-Content …`) so the

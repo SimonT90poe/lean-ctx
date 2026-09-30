@@ -250,6 +250,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   per-process temp data dir (unless `LEAN_CTX_DATA_DIR` is set) and removes the
   ambient agent-scope variables.
 
+### Security — shell allowlist now scopes multi-word entries to their subcommand (#1419)
+
+- A multi-word `shell_allowlist`/`shell_allowlist_extra` entry like
+  `"git status"` previously granted the whole `git` binary — `git stash`,
+  `git push`, `git reset --hard` all passed, because only the base binary
+  name was ever compared. Matching is now token-based: a multi-word entry
+  with no trailing `*` matches only that exact command; add a trailing `*`
+  (`"terraform plan *"`) for prefix matching with any/no further arguments.
+  Single-word entries (`"cargo"`) are unaffected — they still match the
+  whole binary, as before.
+  Before: `shell_allowlist_extra = ["git status"]` also allowed `git stash`.
+  After: it allows only `git status`; use `"git status *"` for the old
+  prefix behavior.
+- Closed a related bypass: a scoped binary that also happens to live under
+  the project root (e.g. `.venv/bin/pip`) could skip scoping entirely via
+  the project-root auto-allow. An allowlist entry naming a binary now always
+  takes precedence over that auto-allow.
+- `lean-ctx doctor` gained two new advisories: multi-word entries whose
+  meaning changed (no trailing `*`), and entries shadowed by a broader one
+  already in effect (e.g. the default `"git"` makes a narrower `"git
+  status"` entry a no-op). Both are informational; neither blocks anything.
+- Compat/rollback: set `shell_allowlist_subcommand_scoping = false` to
+  restore the old base-binary-only matching. Trust-gated — an untrusted
+  workspace's local config cannot set this.
+
 ### Fixed — hook rewrites no longer hide content from agents (#1916, #1917, #1918)
 
 - #1916: a subagent's first read of a file its parent (or a sibling) already

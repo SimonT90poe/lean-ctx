@@ -320,6 +320,10 @@ impl Config {
         // "omitted" as "no override".
         override_if_ne!(default.shell_allowlist, shell_allowlist);
         extend_if_nonempty!(shell_allowlist_extra);
+        // GH #1419 follow-up: opt-out bool, default true — same shape as
+        // `index.respect_gitignore` above, not `shell_allowlist`'s
+        // override_if_ne! (that shape is for a non-boolean default).
+        override_if_false!(shell_allowlist_subcommand_scoping);
         replace_if_nonempty!(default_tool_categories);
         override_if_some!(tool_profile);
         replace_if_nonempty!(tools_enabled);

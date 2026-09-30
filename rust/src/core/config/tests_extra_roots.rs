@@ -124,6 +124,34 @@ fn merge_local_trusted_allows_respect_gitignore_833() {
     );
 }
 
+/// GH #1419 follow-up: untrusted workspace must not weaken shell-allowlist
+/// subcommand scoping back to the vulnerable base-binary-only matching.
+#[test]
+fn merge_local_untrusted_withholds_shell_allowlist_subcommand_scoping() {
+    let mut base = Config::default();
+    assert!(
+        base.shell_allowlist_subcommand_scoping,
+        "default must scope multi-word allowlist entries to their subcommand"
+    );
+    base.merge_local("shell_allowlist_subcommand_scoping = false\n", false);
+    assert!(
+        base.shell_allowlist_subcommand_scoping,
+        "untrusted workspace must not disable subcommand scoping"
+    );
+}
+
+/// GH #1419 follow-up: trusted workspace CAN opt back into the pre-fix,
+/// base-binary-only matching as a deliberate compat/rollback path.
+#[test]
+fn merge_local_trusted_allows_shell_allowlist_subcommand_scoping() {
+    let mut base = Config::default();
+    base.merge_local("shell_allowlist_subcommand_scoping = false\n", true);
+    assert!(
+        !base.shell_allowlist_subcommand_scoping,
+        "trusted workspace must be able to disable subcommand scoping"
+    );
+}
+
 #[test]
 fn merge_local_untrusted_withholds_tool_surface_overrides() {
     // Regression: an untrusted repo's .lean-ctx.toml could silently widen

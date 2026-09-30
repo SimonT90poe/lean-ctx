@@ -261,6 +261,35 @@ fn build_and_persist_fix_report(
         }
     }
 
+    // GH #1419 follow-up (§4): comment out invalid-`*`-placement shell
+    // allowlist entries in the global config.toml. Same guarantees as
+    // rules_dedup above: format-preserving edit, original text kept as a
+    // comment (not deleted), naturally idempotent.
+    {
+        let mut allow_fix_step = SetupStepReport {
+            name: "shell_allowlist_fix".to_string(),
+            ok: true,
+            items: Vec::new(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+        };
+        for line in crate::cli::allow_fix::auto_apply() {
+            let failed = line.starts_with("FAILED");
+            if failed {
+                allow_fix_step.warnings.push(line.clone());
+            }
+            allow_fix_step.items.push(SetupItem {
+                name: "disable_invalid_entry".to_string(),
+                status: if failed { "failed" } else { "applied" }.to_string(),
+                path: None,
+                note: Some(line),
+            });
+        }
+        if !allow_fix_step.items.is_empty() {
+            steps.push(allow_fix_step);
+        }
+    }
+
     let mut hooks_step = SetupStepReport {
         name: "agent_hooks".to_string(),
         ok: true,

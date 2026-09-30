@@ -3,9 +3,9 @@ use crate::core::error::ShellError;
 use super::tokenizer::{Separator, segments_with_separators};
 use super::{
     ShellSecurity, allowlist_block_message, check_substitution_in_args, effective_allowlist,
-    expand_to_leaf_segments, extract_all_commands, extract_base_from_segment, shell_tokenize,
-    skip_env_assignments, split_on_operators, strip_all_heredoc_bodies, strip_comments,
-    strip_quoted_heredoc_bodies,
+    expand_to_leaf_segments, extract_all_commands, extract_base_from_segment,
+    extract_command_tokens_from_segment, shell_tokenize, skip_env_assignments, split_on_operators,
+    strip_all_heredoc_bodies, strip_comments, strip_quoted_heredoc_bodies,
 };
 
 /// Checks whether a command may run, honouring the active [`ShellSecurity`] mode
@@ -117,7 +117,8 @@ pub(super) fn enforce_shell_allowlist(command: &str) -> Result<(), ShellError> {
         check_unconditional_blocked_only(cmd_all)?;
         return Ok(());
     }
-    check_all_segments(cmd_all, &allowlist)
+    let subcommand_scoping = crate::core::config::Config::load().shell_allowlist_subcommand_scoping;
+    check_all_segments(cmd_all, &Allowlist::new(allowlist, subcommand_scoping))
 }
 
 /// Normalize the command string: remove backslash-newline continuations and
@@ -203,7 +204,7 @@ fn check_interpreter_eval_only(segment: &str) -> Result<(), ShellError> {
 /// `inline_ok`: if true, skip eval-flag/heredoc checks (#814 opt-in).
 fn check_interpreter_inner(
     segment: &str,
-    allowlist: Option<&[String]>,
+    allowlist: Option<&Allowlist>,
     depth: usize,
     inline_ok: bool,
 ) -> Result<(), ShellError> {
@@ -270,9 +271,17 @@ fn check_interpreter_inner(
             // In restricted mode, the delegated command must be in the allowlist.
             // Builtins need no entry (`command echo`), as at the top level.
             if let Some(al) = allowlist {
+                // GH #1419 follow-up: match on the delegated command's own
+                // tokens (basenamed), not just its bare name — `timeout 5
+                // git status` must be scoped by "git status *" the same way
+                // a top-level `git status` is, not blanket-allowed by "git".
+                let mut delegated_tokens = rest_tokens.clone();
+                if let Some(first) = delegated_tokens.first_mut() {
+                    *first = delegated.to_string();
+                }
                 if !delegated.is_empty()
                     && !SHELL_BUILTINS.contains(&delegated)
-                    && !matches_allowlist_entry(delegated, al)
+                    && !matches_allowlist_entry(&delegated_tokens, al)
                 {
                     return Err(format!(
                         "[BLOCKED — DO NOT RETRY] '{base}' delegates to '{delegated}' which is not \
@@ -545,7 +554,7 @@ fn is_assignment(word: &str) -> bool {
 
 /// Check if a segment uses an interpreter with an eval flag, or a delegation command
 /// whose target is not in the allowlist.
-fn check_interpreter_abuse(segment: &str, allowlist: &[String]) -> Result<(), ShellError> {
+fn check_interpreter_abuse(segment: &str, allowlist: &Allowlist) -> Result<(), ShellError> {
     let inline_ok = crate::core::config::Config::load().shell_allow_inline_scripts_effective();
     check_interpreter_inner(segment, Some(allowlist), 0, inline_ok)
 }
@@ -733,16 +742,97 @@ pub(super) fn is_project_root_binary(token: &str) -> bool {
     canonical.starts_with(&canonical_root)
 }
 
-/// GH #1419: match a command's base binary against allowlist entries that may
-/// contain subcommands or wildcards (e.g. "terraform plan *"). Compares `base`
-/// against both the full entry and its first word.
-pub(super) fn matches_allowlist_entry(base: &str, allowlist: &[String]) -> bool {
-    allowlist
-        .iter()
-        .any(|entry| entry == base || entry.split_whitespace().next() == Some(base))
+/// Effective allowlist entries plus whether matching is subcommand-scoped
+/// (`shell_allowlist_subcommand_scoping`, GH #1419 follow-up). Threading this
+/// instead of a bare `&[String]` makes the flag explicit and testable at
+/// every call site without reading global config state inside the matching
+/// primitive itself — mirrors how `shell_strict_mode` is read once and
+/// passed as `strict: bool` into `check_substitution_in_args` /
+/// `check_pipe_to_bare_interpreter`.
+#[derive(Clone)]
+pub(crate) struct Allowlist {
+    pub(super) entries: Vec<String>,
+    pub(super) subcommand_scoping: bool,
 }
 
-pub(super) fn check_all_segments(command: &str, allowlist: &[String]) -> Result<(), ShellError> {
+impl Allowlist {
+    pub(crate) fn new(entries: Vec<String>, subcommand_scoping: bool) -> Self {
+        Self {
+            entries,
+            subcommand_scoping,
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+impl From<Vec<String>> for Allowlist {
+    /// Test/back-compat convenience: defaults subcommand scoping on, matching
+    /// the shipped default for `shell_allowlist_subcommand_scoping`.
+    fn from(entries: Vec<String>) -> Self {
+        Self {
+            entries,
+            subcommand_scoping: true,
+        }
+    }
+}
+
+/// GH #1419: match a command's tokens against allowlist entries that may
+/// contain subcommands or a trailing wildcard (e.g. "terraform plan *").
+///
+/// Grammar (design doc §3):
+/// - single-word entry -> implicit wildcard (matches the binary plus any args)
+/// - multi-word entry, no trailing `*` -> exact match, every token in order
+/// - multi-word entry, trailing `*` -> prefix match, zero or more extra tokens
+///
+/// `subcommand_scoping = false` preserves the pre-follow-up behavior exactly:
+/// only the base binary is compared, against each entry's own first word.
+pub(super) fn matches_allowlist_entry(tokens: &[String], allowlist: &Allowlist) -> bool {
+    let Some(base) = tokens.first().map(String::as_str) else {
+        return false;
+    };
+    if !allowlist.subcommand_scoping {
+        return allowlist
+            .entries
+            .iter()
+            .any(|entry| entry == base || entry.split_whitespace().next() == Some(base));
+    }
+    allowlist
+        .entries
+        .iter()
+        .any(|entry| entry_matches(entry, tokens))
+}
+
+/// One entry's own match test under the §3 grammar. Token-based, not
+/// string-based, so `"terraform plan *"` cannot match `terraform planning`
+/// (a different token that merely starts with the same characters).
+fn entry_matches(entry: &str, tokens: &[String]) -> bool {
+    let words: Vec<&str> = entry.split_whitespace().collect();
+    let (Some(&first_word), Some(base)) = (words.first(), tokens.first()) else {
+        return false;
+    };
+    if words.len() == 1 {
+        return base.as_str() == first_word;
+    }
+    if words.last() == Some(&"*") {
+        let prefix = &words[..words.len() - 1];
+        tokens.len() >= prefix.len()
+            && tokens
+                .iter()
+                .zip(prefix.iter())
+                .all(|(t, w)| t.as_str() == *w)
+    } else {
+        tokens.len() == words.len()
+            && tokens
+                .iter()
+                .zip(words.iter())
+                .all(|(t, w)| t.as_str() == *w)
+    }
+}
+
+pub(super) fn check_all_segments(command: &str, allowlist: &Allowlist) -> Result<(), ShellError> {
     if allowlist.is_empty() {
         return Ok(());
     }
@@ -780,17 +870,17 @@ pub(super) fn check_all_segments(command: &str, allowlist: &[String]) -> Result<
             let body_cmds = super::tokenizer::extract_function_body_commands(seg);
             for body_seg in &body_cmds {
                 check_inline_env_block(body_seg)?;
-                let body_base = extract_base_from_segment(body_seg);
-                if body_base.is_empty() {
+                let body_tokens = extract_command_tokens_from_segment(body_seg);
+                let Some(body_base) = body_tokens.first().cloned() else {
                     continue;
-                }
+                };
                 if SHELL_BUILTINS.contains(&body_base.as_str()) {
                     if DELEGATION_COMMANDS.contains(&body_base.as_str()) {
                         check_interpreter_abuse(body_seg, allowlist)?;
                     }
                     continue;
                 }
-                if !matches_allowlist_entry(&body_base, allowlist) {
+                if !matches_allowlist_entry(&body_tokens, allowlist) {
                     return Err(format!(
                         "[BLOCKED — DO NOT RETRY] '{body_base}' (inside function body) is not in the                          shell allowlist.\nFix (additive, keeps the defaults): run  lean-ctx allow {body_base}",
                     ).into());
@@ -801,10 +891,10 @@ pub(super) fn check_all_segments(command: &str, allowlist: &[String]) -> Result<
             continue;
         }
 
-        let base = extract_base_from_segment(seg);
-        if base.is_empty() {
+        let tokens = extract_command_tokens_from_segment(seg);
+        let Some(base) = tokens.first().cloned() else {
             continue;
-        }
+        };
 
         // #1488: allow calling a function defined earlier in the same pipeline.
         if local_functions.contains(&base) {
@@ -833,7 +923,7 @@ pub(super) fn check_all_segments(command: &str, allowlist: &[String]) -> Result<
             Some(true) => continue,
             // PS blocked alias/cmdlet, but allowlist override takes precedence
             // (supports e.g. Elixir's `iex` REPL alongside PS Invoke-Expression).
-            Some(false) if !matches_allowlist_entry(&base, allowlist) => {
+            Some(false) if !matches_allowlist_entry(&tokens, allowlist) => {
                 return Err(format!(
                     "[BLOCKED — DO NOT RETRY] PowerShell cmdlet '{base}' uses a destructive \
                      verb and is not auto-allowed. Add it explicitly: lean-ctx allow {base}\n\
@@ -845,7 +935,7 @@ pub(super) fn check_all_segments(command: &str, allowlist: &[String]) -> Result<
         }
         check_interpreter_abuse(seg, allowlist)?;
         check_dangerous_flags(seg)?;
-        if !matches_allowlist_entry(&base, allowlist) {
+        if !matches_allowlist_entry(&tokens, allowlist) {
             // #813: auto-allow binaries that resolve to existing files under
             // the project root. The first token (before rsplit) carries the
             // path context (e.g. "./cbc_old", "../bin/bench").
@@ -853,7 +943,20 @@ pub(super) fn check_all_segments(command: &str, allowlist: &[String]) -> Result<
                 .into_iter()
                 .next()
                 .unwrap_or_default();
-            if is_project_root_binary(&first_token) {
+
+            // GH #1419 follow-up: when subcommand scoping is on and some
+            // entry explicitly names this binary, that naming IS the user's
+            // scoping signal — a scoping denial must not fall through into
+            // the project-root auto-allow below (`.venv/bin/pip`,
+            // `node_modules/.bin/x`, … would otherwise skip scoping just by
+            // living under the project root).
+            let binary_is_scoped = allowlist.subcommand_scoping
+                && allowlist
+                    .entries
+                    .iter()
+                    .any(|entry| entry.split_whitespace().next() == Some(base.as_str()));
+
+            if !binary_is_scoped && is_project_root_binary(&first_token) {
                 tracing::info!(
                     "[shell_allowlist] auto-allowing project-root binary: {first_token}"
                 );
@@ -863,7 +966,7 @@ pub(super) fn check_all_segments(command: &str, allowlist: &[String]) -> Result<
             // #815: for compound commands, tell the user which segment was
             // blocked and that nothing ran (the pipeline is rejected as a
             // whole before execution, so no prefix commands executed).
-            let mut msg = allowlist_block_message(&base);
+            let mut msg = allowlist_block_message(&base, &tokens, &allowlist.entries);
             if total > 1 {
                 msg.push_str(&format!(
                     "\n\n[pipeline: segment {}/{total} blocked — \

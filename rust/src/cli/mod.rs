@@ -3,6 +3,7 @@ mod addon_deps;
 mod agent_cmd;
 mod agent_tools_cmd;
 mod allow_cmd;
+pub(crate) mod allow_fix;
 pub mod audit_report;
 #[allow(warnings)]
 pub mod badge_cmd;

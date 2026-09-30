@@ -50,13 +50,74 @@ pub(crate) fn shell_allowlist_outcome() -> Outcome {
         };
     }
 
+    let invalid = crate::core::shell_allowlist::invalid_allowlist_entries_pub();
+    let invalid_note = if invalid.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "  {YELLOW}{} invalid entr{} dropped (`*` must be a trailing token){RST}",
+            invalid.len(),
+            if invalid.len() == 1 { "y" } else { "ies" }
+        )
+    };
+
     Outcome {
         ok: true,
         line: format!(
-            "{BOLD}Shell allowlist{RST}  {GREEN}{} command(s) enforced{RST}  {DIM}(add one: lean-ctx allow <cmd>){RST}",
+            "{BOLD}Shell allowlist{RST}  {GREEN}{} command(s) enforced{RST}  {DIM}(add one: lean-ctx allow <cmd>){RST}{invalid_note}",
             effective.len()
         ),
     }
+}
+
+/// GH #1419 follow-up: upgrade advisory — multi-word entries with no
+/// trailing `*` whose meaning changed under subcommand scoping (exact match
+/// only, previously "whole binary"). Read-only; `--fix` deliberately does
+/// NOT add the `*` automatically, since that would widen access — the user
+/// must choose. `None` when there's nothing to report.
+pub(crate) fn shell_allowlist_upgrade_advisory_outcome() -> Option<Outcome> {
+    let narrowed = crate::core::shell_allowlist::narrowed_allowlist_entries_pub();
+    if narrowed.is_empty() {
+        return None;
+    }
+    Some(Outcome {
+        ok: true,
+        line: format!(
+            "{BOLD}Shell allowlist upgrade{RST}  {YELLOW}{} entr{} now match only the exact command{RST}  {DIM}({} — add a trailing `*` if prefix matching was intended){RST}",
+            narrowed.len(),
+            if narrowed.len() == 1 { "y" } else { "ies" },
+            narrowed.join(", ")
+        ),
+    })
+}
+
+/// GH #1419 follow-up: shadowing advisory — a broader entry (e.g. the
+/// default `"git"`) makes a narrower one (`"git status"`) useless. Entries
+/// are a permissive union, so this only warns; it never refuses. `None`
+/// when there's nothing to report.
+pub(crate) fn shell_allowlist_shadowing_outcome() -> Option<Outcome> {
+    let effective = crate::core::shell_allowlist::effective_allowlist_pub();
+    let shadowed = crate::core::shell_allowlist::shadowed_allowlist_entries_pub(&effective);
+    if shadowed.is_empty() {
+        return None;
+    }
+    let detail = shadowed
+        .iter()
+        .map(|(a, b)| format!("'{a}' has no effect (covered by '{b}')"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Some(Outcome {
+        ok: true,
+        line: format!(
+            "{BOLD}Shell allowlist shadowing{RST}  {YELLOW}{} entr{} shadowed{RST}  {DIM}({detail}){RST}",
+            shadowed.len(),
+            if shadowed.len() == 1 {
+                "y is"
+            } else {
+                "ies are"
+            }
+        ),
+    })
 }
 /// Reports the effective PathJail state (GH #392): which knob (if any)
 /// disabled it, and whether configured `allow_paths`/`extra_roots` entries

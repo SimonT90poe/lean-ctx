@@ -13,7 +13,7 @@ use super::*;
 /// waste the reader's time. Name the real fault instead.
 #[test]
 fn a_mangled_base_is_reported_as_a_split_bug_not_an_allowlist_gap() {
-    let msg = allowlist_block_message("print(urllib.parse.quote(sys.argv[1],safe=))");
+    let msg = allowlist_block_message("print(urllib.parse.quote(sys.argv[1],safe=))", &[], &[]);
     assert!(
         msg.contains("split your command line wrongly"),
         "should name the mis-split: {msg}"
@@ -32,7 +32,7 @@ fn a_mangled_base_is_reported_as_a_split_bug_not_an_allowlist_gap() {
 /// swallow the common case.
 #[test]
 fn a_real_command_name_still_gets_the_allow_suggestion() {
-    let msg = allowlist_block_message("terraform");
+    let msg = allowlist_block_message("terraform", &[], &[]);
     assert!(msg.contains("lean-ctx allow terraform"), "{msg}");
 }
 

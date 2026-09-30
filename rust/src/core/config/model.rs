@@ -739,6 +739,16 @@ pub struct Config {
     #[serde(default)]
     pub shell_strict_mode: bool,
 
+    /// GH #1419 follow-up: scope a multi-word `shell_allowlist`/
+    /// `shell_allowlist_extra` entry to the exact subcommand/prefix it names
+    /// (`"git status"` no longer grants the whole `git` binary). Default
+    /// `true` (the secure grammar); set `false` to fall back to the old
+    /// base-binary-only matching as a compat/rollback path. Trust-gated: an
+    /// untrusted workspace cannot weaken this via a local override. Override
+    /// via `LEAN_CTX_SHELL_ALLOWLIST_SUBCOMMAND_SCOPING`.
+    #[serde(default = "serde_defaults::default_true")]
+    pub shell_allowlist_subcommand_scoping: bool,
+
     /// Shell-security mode for ctx_shell / `lean-ctx -c` command gating (GL #788):
     /// `enforce` (default, secure), `warn` (run checks, log violations, never
     /// block) or `off` (skip the allowlist + dangerous-pattern blocks entirely —

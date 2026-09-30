@@ -353,6 +353,15 @@ fn run_inner(json: bool) -> u32 {
     let allowlist_outcome = shell_allowlist_outcome();
     board.check(&allowlist_outcome);
 
+    // 5b1) GH #1419 follow-up: upgrade advisory + shadowing advisory, both
+    // read-only and silent when there's nothing to report.
+    if let Some(upgrade) = shell_allowlist_upgrade_advisory_outcome() {
+        board.check(&upgrade);
+    }
+    if let Some(shadowing) = shell_allowlist_shadowing_outcome() {
+        board.check(&shadowing);
+    }
+
     // 5b2) Path jail (effective state + dead allow_paths entries, GH #392)
     let path_jail = path_jail_outcome();
     board.check(&path_jail);

@@ -1,4 +1,11 @@
 pub(super) fn effective_allowlist() -> Vec<String> {
+    filter_valid_entries(raw_allowlist_entries())
+}
+
+/// The same union `effective_allowlist()` builds, before `*`-placement
+/// filtering — shared with the invalid-entry and upgrade-advisory doctor
+/// checks, which need to see entries `effective_allowlist()` would drop.
+fn raw_allowlist_entries() -> Vec<String> {
     // LEAN_CTX_SHELL_ALLOWLIST_OVERRIDE completely replaces the config (for testing)
     if let Ok(ov) = std::env::var("LEAN_CTX_SHELL_ALLOWLIST_OVERRIDE") {
         return ov
@@ -33,6 +40,115 @@ pub(super) fn effective_allowlist() -> Vec<String> {
     list
 }
 
+/// Public accessor: entries the effective allowlist silently dropped for
+/// invalid `*` placement (§4 of the design doc). Used by `lean-ctx doctor`
+/// to surface a count, and by `--fix` to know which raw config lines to
+/// comment out.
+#[must_use]
+pub fn invalid_allowlist_entries_pub() -> Vec<String> {
+    raw_allowlist_entries()
+        .into_iter()
+        .filter(|e| !is_valid_allowlist_entry(e))
+        .collect()
+}
+
+/// Public accessor: multi-word entries with no trailing `*` — their meaning
+/// changed under subcommand scoping (now exact-match only, previously
+/// "whole binary"). Used by the `lean-ctx doctor` upgrade advisory (§2 of
+/// the design doc). Always empty when `shell_allowlist_subcommand_scoping =
+/// false`, since those entries' meaning didn't change under the compat path.
+#[must_use]
+pub fn narrowed_allowlist_entries_pub() -> Vec<String> {
+    if !crate::core::config::Config::load().shell_allowlist_subcommand_scoping {
+        return Vec::new();
+    }
+    raw_allowlist_entries()
+        .into_iter()
+        .filter(|e| is_valid_allowlist_entry(e))
+        .filter(|e| {
+            let words: Vec<&str> = e.split_whitespace().collect();
+            words.len() > 1 && words.last() != Some(&"*")
+        })
+        .collect()
+}
+
+/// §2 "Shadowing warnings": is `a` made useless by a different entry already
+/// in `entries`? Entry A is shadowed by B when B matches every command A
+/// matches: B is a single word equal to A's first word, or B ends in `*` and
+/// B's words before the `*` are a leading run of A's words (ignoring A's own
+/// trailing `*`). Returns the first covering entry, in list order. Shared by
+/// `lean-ctx allow` (write-time warning) and `lean-ctx doctor` (read-only
+/// advisory) so the rule can't drift between the two.
+#[must_use]
+pub fn shadowing_entry(entries: &[String], a: &str) -> Option<String> {
+    let a_words: Vec<&str> = a.split_whitespace().collect();
+    let a_prefix: &[&str] = if a_words.last() == Some(&"*") {
+        &a_words[..a_words.len() - 1]
+    } else {
+        &a_words
+    };
+    entries
+        .iter()
+        .find(|b| {
+            if b.as_str() == a {
+                return false;
+            }
+            let b_words: Vec<&str> = b.split_whitespace().collect();
+            if b_words.len() == 1 {
+                b_words.first() == a_words.first()
+            } else if b_words.last() == Some(&"*") {
+                let b_prefix = &b_words[..b_words.len() - 1];
+                b_prefix.len() <= a_prefix.len() && a_prefix.starts_with(b_prefix)
+            } else {
+                false
+            }
+        })
+        .cloned()
+}
+
+/// All shadowed entries in `entries`, paired with the entry that covers each
+/// one — used by the `lean-ctx doctor` advisory (§2).
+#[must_use]
+pub fn shadowed_allowlist_entries_pub(entries: &[String]) -> Vec<(String, String)> {
+    entries
+        .iter()
+        .filter_map(|a| shadowing_entry(entries, a).map(|b| (a.clone(), b)))
+        .collect()
+}
+
+/// §4 of the design doc: an entry's only valid `*` placement is a single
+/// trailing token. Bare `*`, an embedded `*`, or more than one `*` are
+/// invalid.
+pub(crate) fn is_valid_allowlist_entry(entry: &str) -> bool {
+    let words: Vec<&str> = entry.split_whitespace().collect();
+    match words.iter().filter(|w| **w == "*").count() {
+        0 => true,
+        1 => words.len() > 1 && words.last() == Some(&"*"),
+        _ => false,
+    }
+}
+
+/// Drops invalid entries rather than failing closed on the whole allowlist
+/// (§4): removing one allow-entry can only make matching *more*
+/// restrictive, never less, so this is safe by construction — mirrors the
+/// `ShellSecurity::resolve()` precedent (an unknown value falls back to
+/// enforce, never to open).
+fn filter_valid_entries(entries: Vec<String>) -> Vec<String> {
+    entries
+        .into_iter()
+        .filter(|entry| {
+            let valid = is_valid_allowlist_entry(entry);
+            if !valid {
+                tracing::warn!(
+                    "[shell_allowlist] dropping invalid allowlist entry '{entry}': `*` must be \
+                     the single trailing token, not embedded, bare, or repeated"
+                );
+            }
+            valid
+        })
+        .collect()
+}
+
 /// Could this token plausibly be an executable name?
 ///
 /// Deliberately permissive — the point is to catch obvious scanner debris
@@ -54,7 +170,7 @@ pub(super) fn is_plausible_command_name(base: &str) -> bool {
 /// (3) — crucially — whether their `config.toml` silently failed to parse (in which
 /// case lean-ctx is on defaults, which is the usual reason an allowlist edit "did
 /// nothing"). That last signal is otherwise invisible over an MCP/stdio transport.
-pub(super) fn allowlist_block_message(base: &str) -> String {
+pub(super) fn allowlist_block_message(base: &str, tokens: &[String], entries: &[String]) -> String {
     let cfg_path = crate::core::config::Config::path().map_or_else(
         || "~/.lean-ctx/config.toml".to_string(),
         |p| p.display().to_string(),
@@ -107,6 +223,10 @@ pub(super) fn allowlist_block_message(base: &str) -> String {
          policy. Allow the command explicitly or change shell_security deliberately."
     );
 
+    if let Some(detail) = closest_entry_detail(tokens, entries) {
+        msg.push_str(&detail);
+    }
+
     if crate::core::config::cloud_infra_commands().contains(&base) {
         msg.push_str(
             "\nNote: cloud/infra CLIs (terraform, kubectl, aws, …) are deliberately \
@@ -145,6 +265,48 @@ pub(super) fn allowlist_block_message(base: &str) -> String {
     }
 
     msg
+}
+
+/// §6 of the design doc: names the closest matching allowlist entry and
+/// where the command's tokens diverge from it, so an LLM agent can
+/// self-correct without a human round-trip. Only fires when at least one
+/// entry shares the base binary — otherwise "not in the shell allowlist"
+/// already says enough. Longest common token prefix; ties resolve to the
+/// first entry in list order (same convention as `levenshtein::closest()`).
+fn closest_entry_detail(tokens: &[String], entries: &[String]) -> Option<String> {
+    let base = tokens.first()?.as_str();
+    let mut best: Option<(&str, usize)> = None;
+    for entry in entries {
+        let words: Vec<&str> = entry.split_whitespace().collect();
+        if words.first() != Some(&base) {
+            continue;
+        }
+        let shared = tokens
+            .iter()
+            .zip(words.iter())
+            .take_while(|(t, w)| t.as_str() == **w)
+            .count();
+        if best.is_none_or(|(_, len)| shared > len) {
+            best = Some((entry.as_str(), shared));
+        }
+    }
+    let (entry, shared) = best?;
+    let entry_words: Vec<&str> = entry.split_whitespace().collect();
+    let diverges_at = entry_words.get(shared).copied();
+    let got = tokens.get(shared).map(String::as_str);
+    let mut detail = match (diverges_at, got) {
+        (Some(expected), Some(got)) => {
+            format!("\n(closest entry '{entry}' requires subcommand '{expected}', got '{got}')")
+        }
+        _ => format!("\n(closest entry '{entry}')"),
+    };
+    if got.is_some_and(|g| g.starts_with('-')) {
+        detail.push_str(
+            "\nGlobal options before the subcommand are not matched. Run \
+             `cd <dir> && <cmd>` instead, or add an explicit allowlist entry.",
+        );
+    }
+    Some(detail)
 }
 /// Public accessor: the fully-resolved allowlist actually enforced by the MCP tools
 /// (base `shell_allowlist` + additive `shell_allowlist_extra` + env), deduplicated.
@@ -239,7 +401,39 @@ pub(super) fn parse_bash_permission(entry: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::allowlist_block_message;
+    use super::{allowlist_block_message, shadowing_entry};
+
+    /// §2 of the design doc: pure-helper shadowing rule, all five agreed cases.
+    #[test]
+    fn shadowing_rule_matches_design_doc_cases() {
+        let entries = |a: &str, b: &str| vec![a.to_string(), b.to_string()];
+
+        assert_eq!(
+            shadowing_entry(&entries("git status", "git"), "git status"),
+            Some("git".to_string()),
+            "a single-word entry shadows any multi-word entry sharing its first word"
+        );
+        assert_eq!(
+            shadowing_entry(&entries("git status -s", "git status *"), "git status -s"),
+            Some("git status *".to_string()),
+            "a trailing-* entry shadows a longer exact entry sharing its prefix"
+        );
+        assert_eq!(
+            shadowing_entry(&entries("git status", "git status *"), "git status"),
+            Some("git status *".to_string()),
+            "a trailing-* entry shadows the identical exact entry"
+        );
+        assert_eq!(
+            shadowing_entry(&entries("git log", "git status *"), "git log"),
+            None,
+            "different subcommands must not shadow each other"
+        );
+        assert_eq!(
+            shadowing_entry(&entries("git status *", "git status"), "git status *"),
+            None,
+            "an exact entry must not shadow a broader trailing-* entry"
+        );
+    }
 
     /// #1814: a `$var` command word is a *correct* split, not a mis-split. The
     /// old text asked the caller to file a bug for intended behaviour and
@@ -248,7 +442,7 @@ mod tests {
     #[test]
     fn variable_command_word_explains_expansion_not_a_parser_bug() {
         for base in ["$X", "$PY", "${CMD}"] {
-            let msg = allowlist_block_message(base);
+            let msg = allowlist_block_message(base, &[], &[]);
             assert!(
                 msg.contains("expands to the command name at run time"),
                 "{base}: must explain expansion, got: {msg}"
@@ -268,7 +462,7 @@ mod tests {
     /// not command names — that is what #1646 added it for.
     #[test]
     fn genuine_mis_splits_still_ask_for_a_report() {
-        let msg = allowlist_block_message("print(urllib.parse.quote(sys.argv[1],safe=))");
+        let msg = allowlist_block_message("print(urllib.parse.quote(sys.argv[1],safe=))", &[], &[]);
         assert!(msg.contains("mis-split"), "got: {msg}");
         assert!(msg.contains("github.com/yvgude/lean-ctx/issues"));
     }
@@ -276,7 +470,7 @@ mod tests {
     /// An ordinary unknown command keeps the actionable `lean-ctx allow` path.
     #[test]
     fn ordinary_command_still_offers_allow() {
-        let msg = allowlist_block_message("ncat");
+        let msg = allowlist_block_message("ncat", &[], &[]);
         assert!(msg.contains("lean-ctx allow ncat"), "got: {msg}");
         assert!(!msg.contains("expands to the command name"));
     }

@@ -143,9 +143,21 @@ state. Headless / fleet environments can opt in without a prompt via
 
 ## 2. Shell allowlist & strict mode
 
-**What it does:** the shell hook only compresses/executes commands whose binary
-is on the allowlist (~200 common dev tools: `git`, `cargo`, `npm`, `node`,
-`python`, …). Anything else passes through untouched rather than being wrapped.
+**What it does:** the shell hook only compresses/executes commands whose
+tokens match an allowlist entry (~200 common dev tools by default: `git`,
+`cargo`, `npm`, `node`, `python`, …). Anything else passes through untouched
+rather than being wrapped.
+
+Entry grammar (`shell_allowlist_subcommand_scoping = true`, the default):
+- A single word (`"cargo"`) matches the binary plus any subcommand/args.
+- A multi-word entry with no trailing `*` (`"git status"`) matches that
+  exact command only — `git stash` needs its own entry.
+- A multi-word entry ending in `*` (`"terraform plan *"`) matches that
+  subcommand plus any (or no) further arguments.
+
+Set `shell_allowlist_subcommand_scoping = false` to fall back to matching
+only the base binary (the behavior before this grammar existed) as a
+compat/rollback path; a trusted workspace only, since it widens access.
 
 **Pipelines & chains (`|`, `&&`, `||`, `;`):** a compound command is wrapped as a
 *single* `lean-ctx -c "<whole>"` only when **every** stage is gate-clean — then

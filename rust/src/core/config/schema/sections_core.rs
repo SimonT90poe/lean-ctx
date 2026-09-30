@@ -780,6 +780,14 @@ pub(super) fn build(sections: &mut BTreeMap<String, SectionSchema>) {
         ),
     );
     root.insert(
+        "shell_allowlist_subcommand_scoping".into(),
+        key(
+            "bool",
+            serde_json::json!(true),
+            "Scope a multi-word shell_allowlist entry to the exact subcommand/prefix it names (GH #1419). Default true; set false to fall back to base-binary-only matching.",
+        ),
+    );
+    root.insert(
         "shell_security".into(),
         key_with_env(
             "string",

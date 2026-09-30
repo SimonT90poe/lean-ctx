@@ -172,6 +172,10 @@ pub(crate) fn strip_sensitive_overrides(local: &mut Config) -> Vec<&'static str>
         local.index.respect_gitignore = true;
         withheld.push("index.respect_gitignore");
     }
+    if !local.shell_allowlist_subcommand_scoping {
+        local.shell_allowlist_subcommand_scoping = true;
+        withheld.push("shell_allowlist_subcommand_scoping");
+    }
 
     withheld
 }

@@ -2,9 +2,9 @@
 //! (idiomatic jq) must not trip the eval/source guard. Real `.`/`source` at
 //! command position stays blocked, including next to quote look-alikes.
 
-use super::{allow, check_all_segments};
+use super::{Allowlist, allow, check_all_segments};
 
-fn list() -> Vec<String> {
+fn list() -> Allowlist {
     allow(&["echo", "printf", "jq"])
 }
 
