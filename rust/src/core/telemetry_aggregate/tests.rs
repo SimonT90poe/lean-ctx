@@ -348,18 +348,30 @@ fn same_day_resends_are_spaced_and_carry_cumulative_totals() {
 #[test]
 #[serial_test::serial]
 fn an_up_to_date_day_is_refused_without_consuming_an_attempt() {
-    let _iso = crate::core::data_dir::isolated_data_dir();
-    let _clock = TestClockGuard::set(BUCKET, T0);
-    begin_daily_send()
-        .expect("first lease")
-        .commit()
-        .expect("commit first send");
+    // A send folds this process's live counters, and non-serial tests (MCP
+    // tool calls) move them at any moment. A round in which they moved proves
+    // nothing about "up to date", so only an undisturbed round is judged.
+    for _ in 0..50 {
+        let _iso = crate::core::data_dir::isolated_data_dir();
+        let before = current_checkpoint();
+        let _clock = TestClockGuard::set(BUCKET, T0);
+        begin_daily_send()
+            .expect("first lease")
+            .commit()
+            .expect("commit first send");
 
-    let _clock = TestClockGuard::set(BUCKET, T0 + MAX_SEND_INTERVAL_SECS);
-    let error = begin_daily_send().err().expect("nothing new to send");
-    assert!(error.contains("already up to date"), "{error}");
-    assert_eq!(attempts_today(), 1);
-    assert!(load_state().expect("state").pending.is_none());
+        let _clock = TestClockGuard::set(BUCKET, T0 + MAX_SEND_INTERVAL_SECS);
+        let second = begin_daily_send();
+        if current_checkpoint() != before {
+            continue;
+        }
+        let error = second.err().expect("nothing new to send");
+        assert!(error.contains("already up to date"), "{error}");
+        assert_eq!(attempts_today(), 1);
+        assert!(load_state().expect("state").pending.is_none());
+        return;
+    }
+    panic!("process counters never held still for one round");
 }
 
 #[test]
