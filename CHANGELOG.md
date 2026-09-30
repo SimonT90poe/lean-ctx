@@ -90,6 +90,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Fixed: tool calls were never counted in production, so every usage
   aggregate reported zero.
 
+### Fixed — parallel first reads no longer fail with "cache lock contention"
+
+- The first `ctx_read` of a session built the tokenizer while it held the
+  global cache lock. That takes seconds on a cold start. Every other read that
+  started at the same moment, for example a subagent reading a set of files in
+  parallel, waited behind it. Past the 10-second deadline those reads failed
+  with "cache lock contention for … — retry in a moment". The tokenizer and the
+  path-protection config are now loaded before the lock is taken, so the lock
+  is held for under a millisecond.
+- A read that still cannot get the lock in time returns the file without
+  caching it. Before, the read failed. The same applies to a cache hit: it is
+  delivered even when its bookkeeping cannot get the lock.
+- Every tenth tool call ran the Pro usage scan, which reads every saved
+  session from disk. The scan ran on the server's async workers and held the
+  session lock the whole time. With a long session history, all tool calls
+  running in parallel stalled behind it. The scan now works on a copy of the
+  two fields it needs, runs in the background, and never runs twice at once.
+
 ### Fixed — files in legacy Windows encodings are indexed
 
 - Source files that are not strict UTF-8 were skipped silently by every index:
