@@ -138,7 +138,7 @@ jobs:
         with:
           msystem: MINGW64
           update: true
-          install: base-devel mingw-w64-x86_64-toolchain
+          install: base-devel mingw-w64-x86_64-toolchain mingw-w64-x86_64-lld
           path-type: inherit
 
       - name: Install Rust GNU target
@@ -156,6 +156,15 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
+          # The target dir needs ~25-40 GB. Old runner images had ~14 GB free,
+          # current ones ~115 GB on a 145 GB disk; the purge below costs
+          # 2m16s, so it only runs when the image is short on space.
+          df -h /
+          avail_gb=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
+          if (( avail_gb >= 60 )); then
+            echo "${avail_gb} GB free — skipping the purge"
+            exit 0
+          fi
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
             /opt/hostedtoolcache/CodeQL /usr/local/.ghcup /usr/share/swift \
             /usr/local/share/powershell /usr/local/share/chromium \
@@ -196,8 +205,14 @@ jobs:
             CARGO="cargo"
           fi
           if [[ "${{ runner.os }}" == "Windows" ]]; then
+            # lld instead of GNU ld: the Windows leg is the critical path of
+            # the whole matrix and linking ~50 full-lib test binaries is where
+            # its time goes — the same reason Linux uses mold. It has to ride
+            # on RUSTFLAGS: the job-wide RUSTFLAGS outranks the per-target
+            # variable below, which cargo therefore never reads.
             JEMALLOC_OVERRIDE="${{ steps.jemalloc.outputs.jemalloc-override }}" \
             CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS="-L ${{ steps.jemalloc.outputs.dummy-dir }}" \
+            RUSTFLAGS="$RUSTFLAGS -C link-arg=-fuse-ld=lld" \
             "$CARGO" test --target x86_64-pc-windows-gnu --all-features
           elif [[ "${{ runner.os }}" == "Linux" ]]; then
             # `mold -run` redirects child linker invocations to mold without
