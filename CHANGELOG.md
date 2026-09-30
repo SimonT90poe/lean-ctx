@@ -95,9 +95,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `lean-ctx-sdk` are the supported embedding surfaces.
 - `rust/LOCK_ORDERING.md` drops lock L88 (`HANDLES`), which lived in the
   removed `content_handle`.
-- Still open in #1923: six modules only tests reference
-  (`predictive_prefetch`, `multiscale_index`, `context_column`, `ocp`,
-  `solution_rules`, `solution_types`).
+- `predictive_prefetch`, `multiscale_index` and `context_column` are removed
+  as well. Only tests referenced them; those tests went with them, and the
+  rest of `neuro_physics_scenarios.rs` and `context_cortex_phase1.rs` stays.
+  `ctx_prefetch` never used `predictive_prefetch`.
+- Kept on purpose: `ocp` is the documented Open Context Protocol export
+  adapter (schemas in `docs/contracts/ocp/`), a library boundary even though
+  no binary path calls it. Still open: `solution_rules` and `solution_types`,
+  which sit next to the Pro code and need that work first.
 
 ### Fixed — the agent surface advertises only what actually works (#1913)
 
