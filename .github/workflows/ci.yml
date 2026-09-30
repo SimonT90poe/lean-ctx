@@ -85,6 +85,22 @@ jobs:
         # at merge), on workflow_dispatch, and in release.yml — so platform
         # regressions are still caught before release, just not on every PR push.
         os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest", "windows-latest"]') || fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') }}
+        # Windows is the critical path of the whole run (15m47s vs 11m on
+        # ubuntu), and one job compiled the crate twice in series: the lib in
+        # test cfg for the unit tests, then the plain lib plus ~50 linked
+        # integration binaries. Two parallel halves split that compile.
+        part: [all, lib, integration]
+        exclude:
+          - os: ubuntu-latest
+            part: lib
+          - os: ubuntu-latest
+            part: integration
+          - os: macos-latest
+            part: lib
+          - os: macos-latest
+            part: integration
+          - os: windows-latest
+            part: all
     runs-on: ${{ matrix.os }}
     # Tests run with libtest's default thread parallelism. The old
     # `--test-threads=1` (env-race legacy, v3.3.5) serialized ~70 binaries that
@@ -138,7 +154,7 @@ jobs:
         with:
           msystem: MINGW64
           update: true
-          install: base-devel mingw-w64-x86_64-toolchain mingw-w64-x86_64-lld
+          install: base-devel mingw-w64-x86_64-toolchain
           path-type: inherit
 
       - name: Install Rust GNU target
@@ -205,15 +221,17 @@ jobs:
             CARGO="cargo"
           fi
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            # lld instead of GNU ld: the Windows leg is the critical path of
-            # the whole matrix and linking ~50 full-lib test binaries is where
-            # its time goes — the same reason Linux uses mold. It has to ride
-            # on RUSTFLAGS: the job-wide RUSTFLAGS outranks the per-target
-            # variable below, which cargo therefore never reads.
+            # The two parts together select what a bare `cargo test` builds
+            # here, minus the doctest pass: the crate has no doctests (0 run
+            # on every OS), and ubuntu/macOS still run that pass.
+            if [[ "${{ matrix.part }}" == "lib" ]]; then
+              SELECT=(--lib)
+            else
+              SELECT=(--bins --test '*' --examples)
+            fi
             JEMALLOC_OVERRIDE="${{ steps.jemalloc.outputs.jemalloc-override }}" \
             CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS="-L ${{ steps.jemalloc.outputs.dummy-dir }}" \
-            RUSTFLAGS="$RUSTFLAGS -C link-arg=-fuse-ld=lld" \
-            "$CARGO" test --target x86_64-pc-windows-gnu --all-features
+            "$CARGO" test --target x86_64-pc-windows-gnu --all-features "${SELECT[@]}"
           elif [[ "${{ runner.os }}" == "Linux" ]]; then
             # `mold -run` redirects child linker invocations to mold without
             # touching RUSTFLAGS (which is pinned to `-Dwarnings` job-wide and
