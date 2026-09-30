@@ -44,7 +44,6 @@ pub mod output_sanitizer;
 pub mod policy;
 pub mod pop_pruning;
 pub mod predictive_coding;
-pub mod predictive_prefetch;
 pub mod preservation;
 pub mod pro_triggers;
 pub mod process_guard;
@@ -91,7 +90,6 @@ pub mod memory_lifecycle;
 pub mod memory_policy;
 pub(crate) mod memory_salience;
 pub mod memory_scheduler;
-pub mod multiscale_index;
 pub mod procedural_memory;
 pub(crate) mod prospective_memory;
 
@@ -118,7 +116,6 @@ pub(crate) mod repomap;
 // ---------------------------------------------------------------------------
 pub mod context_artifacts;
 pub(crate) mod context_bundle;
-pub mod context_column;
 pub(crate) mod context_compiler;
 pub mod context_deficit;
 pub mod context_field;
