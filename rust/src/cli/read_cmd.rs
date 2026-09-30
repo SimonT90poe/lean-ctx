@@ -1028,6 +1028,8 @@ mod jail_parity_tests {
         (tmp, root.to_string_lossy().into_owned())
     }
 
+    // Parity holds in every build: with the `no-jail` feature both paths admit
+    // the read, otherwise both refuse it with the same text.
     #[test]
     fn out_of_root_read_is_denied_like_mcp() {
         let (_tmp, root) = project();
@@ -1035,10 +1037,13 @@ mod jail_parity_tests {
             format!("{root}/../outside.txt"),
             format!("{root}/../../../../../../etc/hosts"),
         ] {
-            let cli = jail_cli_read_path(&raw, &root).expect_err("CLI must deny out-of-root");
-            let mcp = resolve_tool_path(Some(&root), None, &raw).expect_err("MCP denies");
-            assert_eq!(cli, mcp, "CLI and MCP must refuse with the same text");
-            assert!(cli.contains("path escapes project root"), "{cli}");
+            let cli = jail_cli_read_path(&raw, &root);
+            let mcp = resolve_tool_path(Some(&root), None, &raw);
+            assert_eq!(cli, mcp, "CLI and MCP must decide {raw} alike");
+            if !cfg!(feature = "no-jail") {
+                let err = cli.expect_err("CLI must deny out-of-root");
+                assert!(err.contains("path escapes project root"), "{err}");
+            }
         }
     }
 
