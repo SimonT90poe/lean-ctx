@@ -135,7 +135,7 @@ fn auto_read_never_inflates_small_file() {
 /// the 500–700-token `science_cognitive_small` band, mid-size and over the
 /// turn budget, plus prose and Python/TypeScript.
 const AUTO_CORPUS: &[&str] = &[
-    "src/core/attention_placement.rs",
+    "src/core/error.rs",
     "src/core/surprise.rs",
     "src/core/compressor.rs",
     "src/core/entropy.rs",
@@ -190,18 +190,20 @@ fn auto_cognitive_fallback_is_bare_file() {
     let _lock = crate::core::data_dir::test_env_lock();
     crate::test_env::set_var("LEAN_CTX_SHOW_SAVINGS", "0");
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let content = std::fs::read_to_string(root.join("src/core/attention_placement.rs")).unwrap();
+    // A small real source file; `core/error.rs` is used crate-wide, so it
+    // will not disappear the way the original fixture did in #1915.
+    let content = std::fs::read_to_string(root.join("src/core/error.rs")).unwrap();
     let raw = count_tokens(&content);
     let render = || {
         process_mode_tuned(
             &content,
             "cognitive",
             "F1",
-            "attention_placement.rs",
+            "error.rs",
             "rs",
             raw,
             CrpMode::Off,
-            "src/core/attention_placement.rs",
+            "src/core/error.rs",
             None,
             ReadTuning::default(),
         )
