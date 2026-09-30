@@ -54,6 +54,8 @@ fn hook_child_read_never_autostarts_daemon() {
 
     let out = Command::new(bin)
         .args(["read", file.to_str().unwrap(), "--mode", "auto"])
+        // `lean-ctx read` is jailed to the project root (#1903).
+        .current_dir(dir.path())
         .env("LEAN_CTX_HOOK_CHILD", "1")
         .env("HOME", home.path())
         .env("XDG_DATA_HOME", home.path().join("share"))

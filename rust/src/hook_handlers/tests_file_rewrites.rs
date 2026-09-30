@@ -432,6 +432,19 @@ fn is_outside_project_path_tests() {
     assert!(!is_outside_project_path("./Cargo.toml"));
     assert!(!is_outside_project_path("../sibling/file.rs"));
     assert!(!is_outside_project_path("file.txt"));
+
+    // #1903: anything the jailed `lean-ctx read` refuses stays native. With the
+    // `no-jail` feature nothing is refused, so those reads are rewritten.
+    let jailed = !cfg!(feature = "no-jail");
+    assert_eq!(
+        is_outside_project_path("../../../../../../../../etc/hosts"),
+        jailed
+    );
+    assert_eq!(is_outside_project_path("/etc/hosts"), jailed);
+    assert_eq!(
+        rewrite_file_read_command("cat ../../../../../../../../etc/hosts", "lean-ctx").is_none(),
+        jailed
+    );
 }
 
 #[test]

@@ -33,7 +33,7 @@ pub(crate) fn cmd_trust(args: &[String]) {
 /// `lean-ctx untrust [<path>]`.
 pub(crate) fn cmd_untrust(args: &[String]) {
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        eprintln!("Usage: lean-ctx untrust [<path>]   Remove a workspace from the trust store");
+        println!("Usage: lean-ctx untrust [<path>]   Remove a workspace from the trust store");
         return;
     }
     let target = args
