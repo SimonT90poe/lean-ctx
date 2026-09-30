@@ -655,6 +655,15 @@ fn persist_setup_report(report: &SetupReport) -> Result<(), String> {
 mod rule_steering_policy_tests {
     use super::*;
 
+    /// `rules_injection_effective` prefers `LEAN_CTX_RULES_INJECTION` over the
+    /// config, and other tests set it concurrently. Hold the env lock and
+    /// clear it so the config under test decides.
+    fn without_rules_injection_env() -> crate::core::data_dir::TestEnvGuard {
+        let guard = crate::core::data_dir::test_env_lock();
+        crate::test_env::remove_var("LEAN_CTX_RULES_INJECTION");
+        guard
+    }
+
     #[test]
     fn editor_step_respects_commandcode_rule_steering_policy() {
         let tmp = tempfile::tempdir().unwrap();
@@ -700,6 +709,7 @@ mod rule_steering_policy_tests {
 
     #[test]
     fn explicit_auto_false_declines_setup_steering() {
+        let _env = without_rules_injection_env();
         let mut cfg = crate::core::config::Config::default();
         cfg.setup.auto_inject_rules = Some(false);
 
@@ -708,6 +718,7 @@ mod rule_steering_policy_tests {
 
     #[test]
     fn force_overrides_auto_false_but_not_rules_off() {
+        let _env = without_rules_injection_env();
         let force = SetupOptions {
             force_inject_rules: true,
             ..Default::default()
@@ -731,6 +742,7 @@ mod rule_steering_policy_tests {
 
     #[test]
     fn skip_rules_wins_over_force() {
+        let _env = without_rules_injection_env();
         let opts = SetupOptions {
             skip_rules: true,
             force_inject_rules: true,
@@ -744,6 +756,7 @@ mod rule_steering_policy_tests {
 
     #[test]
     fn default_none_and_explicit_true_allow_setup_steering() {
+        let _env = without_rules_injection_env();
         let default_cfg = crate::core::config::Config::default();
 
         assert!(should_allow_rule_steering(

@@ -165,12 +165,22 @@ pub(super) fn handle_with_options_inner(
             // conversation gate mirrors the full-content stub — stubs must
             // never leak across chats (#1042). Fresh reads bypass the cache
             // entirely, so `fresh=true` remains the escape hatch.
+            //
+            // #1909: a variant stored without a conversation id is handed to
+            // the same gate as the full-content stub (`delivered = None`), so
+            // a process with no conversation context still collapses its own
+            // re-reads — the gate withholds whenever a caller is known or
+            // cannot be identified.
+            let delivered = match cache.compressed_delivered_conversation(path, &cache_key) {
+                crate::core::cache::VariantDelivery::Conversation(id) => Some(Some(id)),
+                crate::core::cache::VariantDelivery::UnknownConversation => Some(None),
+                crate::core::cache::VariantDelivery::Absent => None,
+            };
             if super::dispatch::stub_policy_allows()
-                && let crate::core::cache::VariantDelivery::Conversation(delivered) =
-                    cache.compressed_delivered_conversation(path, &cache_key)
+                && let Some(delivered) = delivered
                 && crate::core::conversation::conversation_allows_stub(
                     crate::core::conversation::current_conversation_id_fresh().as_deref(),
-                    Some(&delivered),
+                    delivered.as_deref(),
                 )
             {
                 crate::core::telemetry::global_metrics().record_cache(true);

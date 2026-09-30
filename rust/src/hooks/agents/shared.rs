@@ -95,3 +95,42 @@ pub(super) fn remove_all_blocks(content: &str, start: &str, end: &str) -> String
     }
     out
 }
+
+/// Whole-line occurrences of `marker` — the only form the writers emit, so a
+/// prose mention of a marker is never counted as a block (GL #1158, #1901).
+pub(super) fn count_marker_lines(content: &str, marker: &str) -> usize {
+    content.lines().filter(|l| l.trim() == marker).count()
+}
+
+/// Remove every lean-ctx block *and* every solution-rules block from a global
+/// instructions file (CLAUDE.md / CODEBUDDY.md). The solution block is written
+/// right after the lean-ctx block, outside its markers, so removing only the
+/// lean-ctx block left it behind and each rewrite stacked another copy (#1901).
+pub(super) fn remove_managed_md_blocks(content: &str, start: &str, end: &str) -> String {
+    let out = remove_all_blocks(content, start, end);
+    remove_all_blocks(
+        &out,
+        crate::core::rules_canonical::SOLUTION_BLOCK_START,
+        crate::core::rules_canonical::SOLUTION_BLOCK_END,
+    )
+}
+
+/// True when a global instructions file carries a lean-ctx or solution-rules
+/// block (as whole marker lines) that a strip must remove.
+pub(super) fn contains_managed_md_block(content: &str, start: &str) -> bool {
+    crate::marked_block::contains_marker_line(content, start)
+        || crate::marked_block::contains_marker_line(
+            content,
+            crate::core::rules_canonical::SOLUTION_BLOCK_START,
+        )
+}
+
+/// True when a global instructions file already holds exactly the managed
+/// content: one lean-ctx block, at most the one solution block `block`
+/// carries, and `block` itself verbatim.
+pub(super) fn managed_md_is_current(existing: &str, start: &str, block: &str) -> bool {
+    let solution_start = crate::core::rules_canonical::SOLUTION_BLOCK_START;
+    count_marker_lines(existing, start) == 1
+        && count_marker_lines(existing, solution_start) == count_marker_lines(block, solution_start)
+        && existing.contains(block)
+}

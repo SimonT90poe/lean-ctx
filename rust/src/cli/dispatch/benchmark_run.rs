@@ -287,7 +287,7 @@ fn _connector_names_used(c: &[Box<dyn agent_connector::traits::AgentConnector>])
 }
 
 fn print_help() {
-    eprintln!(
+    println!(
         "\
 lean-ctx benchmark-run \u{2014} run a benchmark against a coding agent
 

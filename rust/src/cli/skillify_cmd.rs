@@ -3,16 +3,19 @@
 use crate::tools::ctx_skillify;
 
 pub(crate) fn cmd_skillify(args: &[String]) {
-    let project_root = super::common::detect_project_root(args);
     let action = args
         .iter()
         .find(|a| !a.starts_with("--"))
         .map_or("mine", String::as_str);
 
-    if matches!(action, "help" | "--help" | "-h") {
+    // `--help` is filtered out of `action` above, so it is checked on its own —
+    // before the default `mine` action, which writes rules (#1906).
+    if action == "help" || args.iter().any(|a| a == "--help" || a == "-h") {
         print_help();
         return;
     }
+
+    let project_root = super::common::detect_project_root(args);
 
     // The promote action takes the next positional after the action as the slug.
     let slug = args
@@ -26,7 +29,7 @@ pub(crate) fn cmd_skillify(args: &[String]) {
 }
 
 fn print_help() {
-    eprintln!(
+    println!(
         "lean-ctx skillify — codify recurring session patterns into .cursor/rules\n\
          \n\
          USAGE:\n    \

@@ -154,10 +154,8 @@ fn epoch_ms() -> u64 {
 }
 
 fn agent_id() -> String {
-    std::env::var("CURSOR_TASK_ID")
-        .or_else(|_| std::env::var("CLAUDECODE"))
-        .or_else(|_| std::env::var("CODEX_THREAD_ID"))
-        .unwrap_or_else(|_| "local-agent".into())
+    // One delivery identity for every registry (#1904).
+    crate::core::agent_identity::delivery_agent_id().to_string()
 }
 
 fn agent_host() -> AgentHost {

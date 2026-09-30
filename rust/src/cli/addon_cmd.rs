@@ -19,6 +19,10 @@ use crate::core::context_package::{
 };
 
 pub(crate) fn cmd_addon(args: &[String]) {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_usage();
+        return;
+    }
     let sub = args
         .iter()
         .find(|a| !a.starts_with('-') && a.as_str() != "addon" && a.as_str() != "addons")
@@ -30,7 +34,7 @@ pub(crate) fn cmd_addon(args: &[String]) {
         Some("add" | "install") => cmd_add(args),
         Some("remove" | "rm" | "uninstall") => cmd_remove(args),
         Some("release") => cmd_release(args),
-        Some("help" | "--help" | "-h") => print_usage(),
+        Some("help") => print_usage(),
         Some(other) => {
             eprintln!("lean-ctx addon: unknown subcommand '{other}'");
             print_usage();

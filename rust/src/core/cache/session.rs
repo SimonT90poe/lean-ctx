@@ -11,9 +11,9 @@ use crate::core::tokens::count_tokens;
 
 /// #1287: delivery state of one compressed render variant. `Absent` = no such
 /// variant cached; `UnknownConversation` = stored without a resolvable
-/// conversation id (the variant stub must not be served — unknown delivery is
-/// never treated as "stub allowed"); `Conversation` = provably delivered to
-/// that conversation.
+/// conversation id (decided by `conversation_allows_stub` with no delivery id:
+/// served only when the caller has no conversation context either, #1909);
+/// `Conversation` = provably delivered to that conversation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VariantDelivery {
     Absent,

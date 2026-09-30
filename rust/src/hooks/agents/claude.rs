@@ -4,7 +4,7 @@ use super::super::{
     shell_quoted_binary, write_file, write_wrapper_file,
 };
 use super::claude_delegation::ensure_bash_rewrite_hook;
-use super::shared::remove_all_blocks;
+use super::shared::{contains_managed_md_block, managed_md_is_current, remove_managed_md_blocks};
 
 pub(crate) fn install_claude_hook_with_mode(global: bool, mode: HookMode) {
     let Some(home) = crate::core::home::resolve_home_dir() else {
@@ -269,7 +269,7 @@ pub(crate) fn install_claude_permissions_allow_mcp(home: &std::path::Path) {
 /// appended a duplicate (GH #549).
 pub(crate) const CLAUDE_MD_BLOCK_START: &str = crate::core::rules_canonical::AGENTS_BLOCK_START;
 const CLAUDE_MD_BLOCK_END: &str = crate::core::rules_canonical::AGENTS_BLOCK_END;
-const CLAUDE_MD_BLOCK_VERSION: &str = "lean-ctx-claude-v9";
+const CLAUDE_MD_BLOCK_VERSION: &str = "lean-ctx-claude-v10";
 
 // v3 (GL #555): self-contained, no `@rules/lean-ctx.md` import. Claude Code
 // expands `@` imports inline at launch ("imports do not reduce context usage"
@@ -302,13 +302,17 @@ const CLAUDE_MD_BLOCK_VERSION: &str = "lean-ctx-claude-v9";
 //
 // v9 (#1399): native Read must remain a narrow edit-gate carve-out, not imply
 // that it is suitable for exploration. Existing blocks must be rewritten.
+//
+// v10 (#1909): drop the "~13 tokens" re-read claim. Under Claude Code the
+// scope is process-derived and sub-agents share the MCP process, so re-read
+// stubs are withheld (#1801) and the claim did not hold.
 const CLAUDE_MD_BLOCK_CONTENT_MCP: &str = "\
 <!-- lean-ctx -->
-<!-- lean-ctx-claude-v9 -->
+<!-- lean-ctx-claude-v10 -->
 ## lean-ctx — Context Runtime
 
 When the `ctx_*` MCP tools are listed in this session, prefer them over native equivalents:
-- `ctx_read` instead of `Read` / `cat` for exploration (cached, 10 modes, unchanged full/auto re-reads ~13 tokens)
+- `ctx_read` instead of `Read` / `cat` for exploration (cached, 10 modes incl. map/signatures)
 - `ctx_shell` instead of `bash` / `Shell` (95+ compression patterns)
 - `ctx_search` instead of `Grep` / `rg` (compact results)
 - `ctx_tree` instead of `ls` / `find` (compact directory maps)
@@ -326,11 +330,11 @@ Details live in the `lean-ctx` skill (loads on demand — keep this file lean).
 
 const CLAUDE_MD_BLOCK_CONTENT_REPLACE: &str = "\
 <!-- lean-ctx -->
-<!-- lean-ctx-claude-v9 -->
+<!-- lean-ctx-claude-v10 -->
 ## lean-ctx — Replace Mode (native Grep/Glob denied by policy)
 
 Native Grep/Glob are denied by policy. Prefer `ctx_*` MCP tools for project work:
-- `ctx_read` for exploration reads (cached, 10 modes, unchanged full/auto re-reads ~13 tokens)
+- `ctx_read` for exploration reads (cached, 10 modes incl. map/signatures)
 - `ctx_shell` for shell commands (95+ compression patterns)
 - `ctx_search` instead of Grep/rg (compact results)
 - `ctx_tree` instead of ls/find (compact directory maps)
@@ -381,17 +385,15 @@ fn install_claude_global_claude_md_for_mode(home: &std::path::Path, mode: HookMo
     } else {
         format!("{base_block}\n\n{solution_block}")
     };
-    let block_count = existing.matches(CLAUDE_MD_BLOCK_START).count();
     let is_replace_block = existing.contains("denied by policy");
     let mode_matches = matches!(mode, HookMode::Replace) == is_replace_block;
-    if block_count == 1
+    if managed_md_is_current(&existing, CLAUDE_MD_BLOCK_START, &block)
         && existing.contains(CLAUDE_MD_BLOCK_VERSION)
-        && existing.contains(&block)
         && mode_matches
     {
         return;
     }
-    let cleaned = remove_all_blocks(&existing, CLAUDE_MD_BLOCK_START, CLAUDE_MD_BLOCK_END);
+    let cleaned = remove_managed_md_blocks(&existing, CLAUDE_MD_BLOCK_START, CLAUDE_MD_BLOCK_END);
     let cleaned = cleaned.trim();
     let updated = if cleaned.is_empty() {
         format!("{block}\n")
@@ -413,7 +415,7 @@ pub(crate) fn sync_claude_global_rules_block(
     install_claude_global_claude_md_for_mode(home, mode);
     let after = std::fs::read_to_string(&path)
         .map_err(|e| format!("failed to read {} after sync: {e}", path.display()))?;
-    if !after.contains(CLAUDE_MD_BLOCK_START) {
+    if !crate::marked_block::contains_marker_line(&after, CLAUDE_MD_BLOCK_START) {
         return Err(format!(
             "{} is missing the canonical lean-ctx pointer block after sync",
             path.display()
@@ -422,16 +424,17 @@ pub(crate) fn sync_claude_global_rules_block(
     Ok(removed_legacy || before != after)
 }
 
-/// Remove the lean-ctx block from `CLAUDE.md` (dedicated mode). Deletes the file
-/// entirely if it becomes empty (i.e. lean-ctx was its only content).
+/// Remove the lean-ctx block (and its solution block) from `CLAUDE.md`
+/// (dedicated/off mode). Deletes the file entirely if it becomes empty (i.e.
+/// lean-ctx was its only content).
 fn strip_claude_md_block(claude_md_path: &std::path::Path) {
     let Ok(existing) = std::fs::read_to_string(claude_md_path) else {
         return;
     };
-    if !existing.contains(CLAUDE_MD_BLOCK_START) {
+    if !contains_managed_md_block(&existing, CLAUDE_MD_BLOCK_START) {
         return;
     }
-    let cleaned = remove_all_blocks(&existing, CLAUDE_MD_BLOCK_START, CLAUDE_MD_BLOCK_END);
+    let cleaned = remove_managed_md_blocks(&existing, CLAUDE_MD_BLOCK_START, CLAUDE_MD_BLOCK_END);
     if cleaned.trim().is_empty() {
         let _ = std::fs::remove_file(claude_md_path);
     } else {
@@ -1273,6 +1276,64 @@ mod tests {
             "duplicates must collapse to one, got:\n{after}"
         );
         assert!(after.contains("# my notes"), "user content must survive");
+    }
+
+    #[test]
+    fn prose_marker_mention_does_not_stack_solution_blocks() {
+        // #1901: a prose mention of `<!-- lean-ctx -->` made the substring
+        // count 2, forcing a rewrite that removed only the lean-ctx block and
+        // left the solution block behind — every run stacked another copy.
+        let _lock = crate::core::data_dir::test_env_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let dir = crate::core::editor_registry::claude_state_dir(home);
+        std::fs::create_dir_all(&dir).unwrap();
+        let md = dir.join("CLAUDE.md");
+        let prose = "# Test\n\n- The `<!-- lean-ctx -->` block below is auto-generated.\n";
+        let solution = crate::core::rules_canonical::SOLUTION_BLOCK_START;
+        let solution_end = crate::core::rules_canonical::SOLUTION_BLOCK_END;
+        let stacked = format!(
+            "{prose}\n{solution}\nold\n{solution_end}\n\n{solution}\nold\n{solution_end}\n"
+        );
+        std::fs::write(&md, stacked).unwrap();
+
+        crate::test_env::set_var("LEAN_CTX_RULES_INJECTION", "shared");
+        for _ in 0..3 {
+            install_claude_global_claude_md_for_mode(home, HookMode::Replace);
+        }
+        let after = std::fs::read_to_string(&md).unwrap();
+        install_claude_global_claude_md_for_mode(home, HookMode::Replace);
+        let again = std::fs::read_to_string(&md).unwrap();
+        crate::test_env::remove_var("LEAN_CTX_RULES_INJECTION");
+
+        let expected_solutions =
+            usize::from(!crate::core::rules_canonical::enabled_solution_rules_block().is_empty());
+        assert_eq!(
+            super::super::shared::count_marker_lines(&after, solution),
+            expected_solutions,
+            "stale solution blocks must collapse, got:\n{after}"
+        );
+        assert_eq!(
+            super::super::shared::count_marker_lines(&after, CLAUDE_MD_BLOCK_START),
+            1,
+            "{after}"
+        );
+        assert!(
+            after.starts_with(prose),
+            "user prose must survive:\n{after}"
+        );
+        assert_eq!(after, again, "a current file must not be rewritten");
+    }
+
+    #[test]
+    fn strip_removes_orphaned_solution_block() {
+        let tmp = tempfile::tempdir().unwrap();
+        let md = tmp.path().join("CLAUDE.md");
+        let start = crate::core::rules_canonical::SOLUTION_BLOCK_START;
+        let end = crate::core::rules_canonical::SOLUTION_BLOCK_END;
+        std::fs::write(&md, format!("# notes\n\n{start}\nrules\n{end}\n")).unwrap();
+        strip_claude_md_block(&md);
+        assert_eq!(std::fs::read_to_string(&md).unwrap(), "# notes\n");
     }
 
     #[test]

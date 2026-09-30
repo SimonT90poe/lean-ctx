@@ -124,7 +124,9 @@ mod zstd_bypass {
         );
         assert!(!out1.content.is_empty());
 
-        // Second map read — should hit compressed cache (no zstd decompression needed)
+        // Second map read — served from the compressed cache. Since #1909 an
+        // unchanged variant collapses to the same `[unchanged]` stub as a
+        // `full` re-read (no conversation context in this process).
         let out2 = lean_ctx::tools::ctx_read::handle_with_task_resolved(
             &mut cache,
             path,
@@ -132,8 +134,9 @@ mod zstd_bypass {
             CrpMode::Off,
             None,
         );
-        assert!(!out2.content.is_empty());
-        assert_eq!(out1.content, out2.content);
+        assert!(out2.is_cache_hit, "{}", out2.content);
+        assert!(out2.content.contains("unchanged"), "{}", out2.content);
+        assert!(out2.output_tokens <= out1.output_tokens);
     }
 }
 
@@ -850,8 +853,9 @@ mod integration_workflow {
             CrpMode::Off,
             None,
         );
-        // Should be identical (compressed cache hit)
-        assert_eq!(sig1.content, sig2.content);
+        // Compressed cache hit: unchanged variant collapses to a stub (#1909)
+        assert!(sig2.is_cache_hit, "{}", sig2.content);
+        assert!(sig2.content.contains("unchanged"), "{}", sig2.content);
 
         // 3. Read with map mode
         let map1 = lean_ctx::tools::ctx_read::handle_with_task_resolved(

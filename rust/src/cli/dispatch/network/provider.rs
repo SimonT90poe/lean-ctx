@@ -32,7 +32,7 @@ fn slugify_id(raw: &str) -> Option<String> {
 }
 
 fn provider_usage() {
-    eprintln!(
+    println!(
         "Usage: lean-ctx provider <command>\n\n\
          Commands:\n  \
          init <id> [--force]                Scaffold a config provider in .lean-ctx/providers/\n  \

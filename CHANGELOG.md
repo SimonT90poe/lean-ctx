@@ -24,6 +24,51 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Docs: removed the unmeasured "~5-15% extra savings" claim; OpenAI caching
   discounts are now described as "up to 90% on GPT-5-family".
 
+### Fixed — `ctx_read` stubs only claim content the caller actually has (#1904, #1909)
+
+- Every Claude Code process has `CLAUDECODE=1`, and that constant was used as
+  the cross-agent delivery id, so all Claude Code clients on a machine counted
+  as one agent. Delivery now uses its own per-process id: `LEAN_CTX_AGENT_ID`,
+  then `CURSOR_TASK_ID`, then `claude-<pid>`, `codex-<pid>` or `local-<pid>`.
+- A content-free cross-agent stub ("already in your context") is only served
+  when the delivery provably reached the caller's conversation. Agent B in a
+  new conversation now gets the content, never a stub pointing at agent A's
+  context. Relayed content is only reused for the view that was asked for, so
+  a `signatures` request is never answered with a `map`.
+- The MCP path recorded deliveries with a hard-coded line count of `0`. CLI,
+  daemon and MCP now record the same content snapshot.
+- Under Claude Code, sub-agents share their parent's lean-ctx process, so a
+  process scope cannot tell which agent is asking. Re-read stubs are withheld
+  there and each re-read returns the (compressed) content. `LEAN_CTX_SCOPE`
+  opts back in for integrations that run one agent per process. The
+  CLAUDE.md block (v10) drops the "re-reads ~13 tokens" claim.
+
+### Security — `lean-ctx read` is jailed like `ctx_read`; `--help` never runs a command (#1901, #1903, #1906)
+
+- `lean-ctx read` enforces the same boundary as MCP `ctx_read`, with the same
+  error text: the PathJail (project root, `allow_paths`, extra and read-only
+  roots, the lean-ctx state dir) and the secret-path policy. Before, it read
+  files outside the project with only a warning. A relative path resolves
+  against the current directory. A broad root (home, `/`, an agent config
+  dir) is refused unless `path_jail = false`.
+- Shell-hook rewrites leave a `cat` that the jailed read would refuse on the
+  native command, so a working command never turns into an access error.
+- A git worktree under `<repo>/.claude/worktrees/<name>` counts as a project,
+  not as agent config.
+- `lean-ctx <command> --help` prints help and never runs the command. Before,
+  `pack --help` built a PR pack, `secure --help` rewrote the config,
+  `proof --help` wrote proof artifacts, `skillify --help` generated rules and
+  `upgrade --help` installed a release. The dispatcher now answers `--help`
+  centrally from the `help all` reference. It passes the flag on only to
+  handlers whose own help is verified side-effect free, and a test fails when
+  a new command is left unclassified.
+- `upgrade` forwards its arguments to `update`, so `upgrade --check` only
+  checks.
+- `init --agent claude` no longer stacks another solution-rules block on
+  every run when CLAUDE.md prose mentions the `<!-- lean-ctx -->` marker. Only
+  whole marker lines count as blocks, and a strip removes the solution block
+  together with the lean-ctx block.
+
 ### Fixed — quality claims match what the gates can show (#1905)
 
 - `lean-ctx eval ab` reports now print `POWER: underpowered` when a run has
@@ -95,9 +140,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `lean-ctx-sdk` are the supported embedding surfaces.
 - `rust/LOCK_ORDERING.md` drops lock L88 (`HANDLES`), which lived in the
   removed `content_handle`.
-- Still open in #1923: six modules only tests reference
-  (`predictive_prefetch`, `multiscale_index`, `context_column`, `ocp`,
-  `solution_rules`, `solution_types`).
+- `predictive_prefetch`, `multiscale_index` and `context_column` are removed
+  as well. Only tests referenced them; those tests went with them, and the
+  rest of `neuro_physics_scenarios.rs` and `context_cortex_phase1.rs` stays.
+  `ctx_prefetch` never used `predictive_prefetch`.
+- Kept on purpose: `ocp` is the documented Open Context Protocol export
+  adapter (schemas in `docs/contracts/ocp/`), a library boundary even though
+  no binary path calls it. Still open: `solution_rules` and `solution_types`,
+  which sit next to the Pro code and need that work first.
 
 ### Fixed — the agent surface advertises only what actually works (#1913)
 

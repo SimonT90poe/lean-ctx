@@ -162,7 +162,7 @@ COMMANDS:
     statusline [--wrap \"<cmd>\"]    Claude Code status line (set up by `init --agent claude`)
     prompt-segment [--shell zsh|bash|fish|plain]  Shell prompt segment (set up by `init --prompt`)
     learning [status|export|import]  Local adaptive-learning state: inspect, export, import
-         token-report [--json]          Token + memory report (project + session + CEP)
+    token-report [--json]          Token + memory report (project + session + CEP)
     pack --pr                      PR Context Pack (changed files, impact, tests, artifacts)
     snapshot create|list|show|verify|restore|publish|import  Context Time Machine: git-anchored, signed snapshots; replay, resume + share
     index <status|build|build-full|watch|why <file>>  Codebase index utilities
@@ -242,7 +242,6 @@ COMMANDS:
     dev-install                    Build release + atomic install + restart (for development)
     codesign-setup                 macOS: one-time stable signing identity (stops repeating TCC prompt, #356)
     gotchas [list|clear|export|stats] Bug Memory: view/manage auto-detected error patterns
-    buddy [show|stats|ascii|json]  Token Guardian: your data-driven coding companion
     doctor integrations [--json]   Integration health checks (Cursor/Claude Code/CodeBuddy)
     doctor [--fix] [--json]        Run diagnostics (and optionally repair)
     doctor --migrate-check         v1.0 migration readiness audit (config, deprecations, data)
@@ -252,8 +251,6 @@ COMMANDS:
     plan <task> [--budget=N]       Context planning (optimal Phi-scored context plan)
     compile [--mode=<m>] [--budget=N] Context compilation (knapsack + Boltzmann)
     visualize [--output F] [--open] Generate interactive HTML report (D3.js graph)
-    plugin list|enable|disable|info|init|hooks
-                                   Manage lean-ctx plugins
     addon list|search|info|add|remove
                                    Unavailable: marketplace/addon surface is Research
     rules sync|diff|lint|status|init
@@ -265,6 +262,81 @@ COMMANDS:
                                    MCP configs, rules, autostart, data, AND the binary itself.
                                    --keep-config preserves MCP/rules · --keep-binary keeps the
                                    binary · --dry-run previews without changing anything
+
+PROJECT & AGENT TOOLS:
+    semantic-search <query> [options]  Hybrid BM25 + embeddings code search (alias: search-code)
+    repomap [--json] [--max-tokens N] [--limit N]  PageRank-ranked repository map (alias: repo-map)
+    glob <pattern> [path]          Find files by glob pattern
+    heatmap [--top=N] [--dir=D] [--by=connections|tokens] [--json]  Most-connected / costliest files
+    call <tool> --project-root <path> --json '<json>' [--json-file <path>]
+                                   Invoke one MCP tool from the shell
+    ledger <status|reset|evict|prune|push> [args]  Inspect and manage the context ledger
+    ocla [ocla]                    Inspect Open Context & Token Lifecycle Architecture state
+    summary [recall|record|list] [query] [--top-k N]  Record + recall AI session summaries
+    checkpoints [--session <id>] [--commit <sha>] [--orphaned]  List provenance checkpoints
+    import <claude-code|codex|cursor|opencode>|--all [--dry-run]  Import facts from AI session histories
+    skillify [mine|list|status|promote <slug>]  Codify recurring session patterns into .cursor/rules
+    learn [--apply] [--mine [dir]] Learned error→fix corrections (--mine: distill a transcript dir)
+    export-rules [--format mdc|agents-md|claude-md|codebuddy-md] [--root DIR]
+                                   Export high-confidence knowledge as agent rules
+    compact [path]                 Compact agent transcripts (default: ~/.claude/projects)
+    agent register|list|presence|show|heartbeat|suspend|resume|decommission|check
+                                   Agent identities: registered, attested, revocable
+    instructions --client <id> [--profile <name>] [--json] | --list-clients
+                                   Print the agent instructions lean-ctx generates for a client
+    provider init|auth|logout|list Context providers (config scaffolds, Jira OAuth)
+    trust [<path>|status [<path>]|--list]  Trust a workspace (gates project-level overrides)
+    untrust [<path>]               Remove a workspace from the trust store
+    harden [options]               Deny native Read/Grep/Glob in IDE configs
+    telemetry [status|on|off|show|reset-id|history]  Anonymous usage heartbeat (opt-in, no PII)
+    completions <zsh|bash|fish>    Print the shell completion script
+    report-issue [--title T] [--description D] [--dry-run] [--include-tee]
+                                   Open a GitHub issue with diagnostics (alias: report)
+    billing status|plans|entitlements <plan>|usage|settlement <verify|export> [--json]
+                                   Plan, entitlement and usage details
+
+EVIDENCE & MEASUREMENT:
+    stats [json|reset-cep]         Raw token counters (JSON export, reset CEP stats)
+    roi [--json|--md] [--export <path>]  Verified savings (ROI) report from the signed ledger
+    finops export [--target=focus|cbf|vantage] [--from=D] [--to=D] [--out=FILE]
+                                   Daily cost/savings rows from the savings ledger
+    measure <baseline-start|baseline-stop|treatment-start|treatment-stop|compare|report>
+                                   Baseline vs. treatment measurement [--format markdown|json]
+    evidence run|workflow|realworld|report|v2|inspect  Generate or inspect evidence bundles
+    evidence-export [--output DIR] [--format markdown|json]  Portable package of local evidence
+    shadow [--latest|--list|--force]  Inspect local Shadow Mode comparisons
+    eval init <dir> | eval ab --suite <file>  Deterministic with/without output-quality proof
+    verify [--format summary|json|both] [--json]  Output-verification statistics
+    verify <bundle.zip> [--public-key F] [--verbose] [--json]  Verify an evidence bundle offline
+    proof [--format json|summary|both] [--no-write] [--filename F]  Write context proof artifacts
+    audit [evidence|determinism]   Compliance report (default), evidence audit, determinism check
+    conformance [--json]           Conformance scorecard, non-zero exit on failure (alias: selftest)
+    quality-lab [--original F --compressed F --ext E] [--json] [--gate]  Compression quality check
+    benchmark-run [AGENT] [options]  Run a benchmark against a coding agent (alias: bench-run)
+    calibrate [PROFILE] [options]  Find the optimal Performance Profile
+    pair <CODE>                    Pair with leanctx.com for remote benchmarks
+    scenario [all|triage|knowledge|shadow|value-gate|full-loop]  Run an end-to-end scenario
+    triage accuracy [--json]       Triage model accuracy report
+    model install triage | model status | model remove triage  Manage the local triage model
+    cognitive                      Context-intelligence subsystem status
+    introspect <cognition|qubo> [--json]  Cognition snapshot or QUBO selection benchmark
+    safety-levels                  Per-command compression safety levels (alias: safety)
+    badge [generate|stats [--json]|github-action|install]  \"Written with lean-ctx\" README badge
+
+INTEGRATION ENTRY POINTS (called by editors and hooks, not by hand):
+    mcp                            Start the MCP server on stdio (same as bare lean-ctx)
+    hook <rewrite|redirect|deny|read-dedup|observe|post-commit|copilot|...>
+                                   Agent hook handlers (Claude, Cursor, Copilot, Codex, Vibe)
+    editor-signal --file <path>    Report the file an editor has open
+    editor-session --event <open|heartbeat|close> --source <editor> --workspace <path> --session-id <id>
+                                   Record editor session presence
+    git-trailer <msg-file> [source]  Add the lean-ctx commit trailer (prepare-commit-msg hook)
+
+RESEARCH & RENAMED:
+    demo                           Research: control-plane demo (not in the public runtime)
+    enterprise                     Research: organization operations (not in the public runtime)
+    team                           Requires the lean-ctx Enterprise edition
+    upgrade [args]                 Renamed to `update`; forwards its arguments
 
 SHELL HOOK PATTERNS (95+):
     git       status, log, diff, add, commit, push, pull, fetch, clone,
@@ -319,7 +391,7 @@ EXAMPLES:
     lean-ctx gain --live           Live auto-updating terminal dashboard
     lean-ctx gain --graph          30-day local context-usage chart
     lean-ctx gain --daily          Day-by-day breakdown with USD
-         lean-ctx token-report --json   Machine-readable token + memory report
+    lean-ctx token-report --json   Machine-readable token + memory report
     lean-ctx dashboard             Open web dashboard at localhost:3333
     lean-ctx dashboard --host=0.0.0.0  Bind to all interfaces (remote access)
     lean-ctx gain --wrapped        Wrapped report card (recommended)
@@ -352,7 +424,7 @@ EXAMPLES:
     lean-ctx-mode off              Same as lean-ctx-off
     lean-ctx-status                Show whether compression is active
     lean-ctx init --agent pi       Install Pi Coding Agent extension
-  lean-ctx init --agent grok        Configure Grok (xAI) MCP + hooks
+    lean-ctx init --agent grok     Configure Grok (xAI) MCP + hooks
     lean-ctx doctor                Check PATH, config, MCP, and dashboard port
     lean-ctx doctor integrations   Detailed integration checks (Cursor/Claude Code/CodeBuddy)
     lean-ctx doctor --fix --json   Repair + machine-readable report
