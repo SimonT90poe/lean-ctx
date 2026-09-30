@@ -127,13 +127,17 @@ fn drain(pipe: Option<&mut impl Read>) -> String {
 mod tests {
     use super::*;
 
+    /// These tests check what `run_git` reports, not how fast git is. A loaded
+    /// Windows runner has taken more than 5 s for a plain `rev-parse`.
+    const TEST_TIMEOUT: Duration = Duration::from_secs(30);
+
     #[test]
     fn git_version_runs() {
         if !git_available() {
             return; // CI without git — nothing to assert
         }
-        let out = run_git(&["--version"], Path::new("."), Duration::from_secs(5), &[])
-            .expect("git --version");
+        let out =
+            run_git(&["--version"], Path::new("."), TEST_TIMEOUT, &[]).expect("git --version");
         assert!(out.success);
         assert!(out.stdout.to_lowercase().contains("git version"));
     }
@@ -146,7 +150,7 @@ mod tests {
         let out = run_git(
             &["rev-parse", "--verify", "definitely-not-a-ref"],
             Path::new("."),
-            Duration::from_secs(5),
+            TEST_TIMEOUT,
             &[],
         )
         .expect("git should run");
