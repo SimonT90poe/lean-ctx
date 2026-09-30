@@ -235,6 +235,14 @@ pub(super) fn check_powershell_cmdlet(base: &str) -> Option<bool> {
     None
 }
 
+/// #1930: is `base` a `Verb-Noun` cmdlet with a verb this module knows? Such
+/// a command runs the script blocks it receives, so their bodies are
+/// validated. `docker-compose` and other hyphenated binaries do not qualify.
+pub(super) fn is_known_cmdlet(base: &str) -> bool {
+    looks_like_cmdlet(base)
+        && (is_safe_exception(base) || is_safe_verb(base) || is_blocked_verb(base))
+}
+
 fn looks_like_cmdlet(s: &str) -> bool {
     let Some(hyphen_pos) = s.find('-') else {
         return false;

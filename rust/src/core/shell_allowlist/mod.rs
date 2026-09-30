@@ -12,6 +12,7 @@ mod enforcement;
 mod heredoc;
 mod mode;
 mod powershell;
+mod ps_statements;
 mod substitution;
 mod tokenizer;
 
@@ -55,6 +56,8 @@ mod tests_conditionals;
 mod tests_multiword;
 #[cfg(test)]
 mod tests_pipe_target;
+#[cfg(test)]
+mod tests_ps1930;
 #[cfg(test)]
 mod tests_tokenizer;
 #[cfg(test)]

@@ -1,8 +1,10 @@
 use crate::core::error::ShellError;
 
+use super::ps_statements::Found;
 use super::{
-    contains_double_semicolon, extract_all_commands, find_shell_word, quote_aware_token_end,
-    rewrite_case_constructs, shell_tokenize, skip_env_assignments, skip_powershell_assignment,
+    contains_double_semicolon, extract_all_commands, extract_base_from_segment, find_shell_word,
+    quote_aware_token_end, rewrite_case_constructs, shell_tokenize, skip_env_assignments,
+    skip_powershell_assignment,
 };
 
 /// Shell reserved words whose operator-delimited segment carries no validatable
@@ -60,6 +62,25 @@ fn resolve_segment_leaves(
         .into());
     }
     let mut s = segment.trim();
+    // #1930: PowerShell control flow (`if (…) { … }`, `try { … } catch { … }`,
+    // `foreach (…) { … }`) and expression statements (`$t.Actions`, `($t)`,
+    // `@(cmd)`, `[Type]::Member()`) carry no command of their own; the
+    // commands inside them are resolved as leaves.
+    if let Some(found) = super::ps_statements::statement_commands(s) {
+        for item in found? {
+            match item {
+                Found::Command(text) => resolve_commands(&text, depth + 1, out)?,
+                Found::Block(body) => resolve_block_body(&body, depth, out)?,
+            }
+        }
+        return Ok(());
+    }
+    if let Some(commands) = super::ps_statements::expression_commands(s) {
+        for command in commands {
+            resolve_commands(&command, depth + 1, out)?;
+        }
+        return Ok(());
+    }
     loop {
         let tokens = shell_tokenize(s);
         let Some(first) = tokens.first() else {
@@ -140,7 +161,42 @@ fn resolve_segment_leaves(
     // the real base command inside — no recursion needed like subshells get,
     // since `cd`/env changes inside `{ }` must persist to the caller (#939,
     // agent_wrapper::rebuild's cwd-tracking wrapper).
+    //
+    // #1930: a cmdlet runs the script blocks it is handed
+    // (`ForEach-Object { Remove-Item $_ }`), so each block body is resolved
+    // into leaves of its own, after the cmdlet itself so its verdict comes
+    // first.
     out.push(s.to_string());
+    let base = extract_base_from_segment(s);
+    for body in super::ps_statements::script_block_bodies(s, &base) {
+        resolve_block_body(&body, depth, out)?;
+    }
+    Ok(())
+}
+
+/// Resolve every segment of a command text found inside PowerShell syntax.
+fn resolve_commands(text: &str, depth: usize, out: &mut Vec<String>) -> Result<(), ShellError> {
+    for segment in extract_all_commands(text) {
+        resolve_segment_leaves(&segment, depth, out)?;
+    }
+    Ok(())
+}
+
+/// #1930: resolve the body of a PowerShell `{ … }` block. Only PowerShell runs
+/// its statements, so an inert expression statement (`$_.Length -gt 100`,
+/// `$n = $n + 1`) contributes just the commands inside it; anything else is a
+/// pipeline, resolved as usual.
+fn resolve_block_body(body: &str, depth: usize, out: &mut Vec<String>) -> Result<(), ShellError> {
+    for statement in extract_all_commands(body) {
+        match super::ps_statements::block_statement_commands(&statement) {
+            Some(commands) => {
+                for command in commands {
+                    resolve_commands(&command, depth + 1, out)?;
+                }
+            }
+            None => resolve_segment_leaves(&statement, depth + 1, out)?,
+        }
+    }
     Ok(())
 }
 

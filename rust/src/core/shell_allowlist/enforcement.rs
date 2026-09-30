@@ -759,6 +759,12 @@ pub(super) fn check_all_segments(command: &str, allowlist: &[String]) -> Result<
 
     let segments = expand_to_leaf_segments(command)?;
     if segments.is_empty() {
+        // #1930: a line of inert PowerShell (`$sw.Elapsed.TotalSeconds`,
+        // `$path = [Environment]::GetEnvironmentVariable('Path')`) runs no
+        // command, so it has no leaf to check — that is not an empty command.
+        if super::ps_statements::is_inert_powershell(command) {
+            return Ok(());
+        }
         return Err("[BLOCKED — DO NOT RETRY] Empty command".into());
     }
 
