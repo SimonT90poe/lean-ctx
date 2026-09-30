@@ -329,7 +329,8 @@ pub async fn forward_request(
             guard.verify(before, &after)
         },
     );
-    if !determinism_proof.is_stable {
+    let guard_reverted = !determinism_proof.is_stable;
+    if guard_reverted {
         tracing::warn!(
             request_id = %determinism_proof.request_id,
             frozen_bytes = determinism_proof.frozen_bytes,
@@ -357,16 +358,19 @@ pub async fn forward_request(
     }
     apply_ocla_budget_admission(&parts, prepared.body.len())?;
     let original_size = prepared.original_size;
-    let compressed_size = prepared.compressed_size;
-    let compression_candidate = prepared.compression_candidate;
+    let mut compressed_size = prepared.compressed_size;
     let preserve_content_encoding = prepared.preserve_content_encoding;
 
     let mut pipeline_report = None;
-    if let Some(messages) = prepared
-        .parsed
-        .as_mut()
-        .and_then(|body| body.get_mut("messages"))
-        .and_then(serde_json::Value::as_array_mut)
+    let mut pipeline_changed = false;
+    // #1912: a guard revert promised the caller's exact bytes — no pipeline
+    // stage and no effort injection may run on top of it.
+    if !guard_reverted
+        && let Some(messages) = prepared
+            .parsed
+            .as_mut()
+            .and_then(|body| body.get_mut("messages"))
+            .and_then(serde_json::Value::as_array_mut)
     {
         let messages_before_pipeline = messages.clone();
         let pipeline_config = crate::core::config::Config::load().proxy.pipeline.clone();
@@ -433,6 +437,7 @@ pub async fn forward_request(
                 context_advice.as_ref(),
             )
         })) {
+            pipeline_changed = *messages != messages_before_pipeline;
             pipeline_report = Some(report);
         } else {
             *messages = messages_before_pipeline;
@@ -442,15 +447,25 @@ pub async fn forward_request(
 
     if let (Some(report), Some(parsed_body)) = (pipeline_report.as_ref(), prepared.parsed.as_mut())
     {
-        report.apply_effort_budget(parsed_body);
-        let serialized =
-            serde_json::to_vec(parsed_body).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        prepared.body = serialized;
-        prepared.compressed_size = prepared.body.len();
-        prepared.compression_candidate = true;
+        let effort_changed = report.apply_effort_budget(parsed_body);
+        if pipeline_changed || effort_changed {
+            let serialized =
+                serde_json::to_vec(parsed_body).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            // The upstream still receives the caller's Content-Encoding, so a
+            // rewritten gzip/zstd body must be re-encoded, not sent as plain JSON.
+            prepared.body = prepare::encode_request_body(&parts, serialized)?;
+            prepared.compression_candidate = true;
+        }
     }
 
-    let _ = compression_candidate;
+    // #1912: when nothing changed the request's meaning — every rewrite was a
+    // no-op or reverted — forward the caller's bytes untouched. A re-serialized
+    // body reorders keys and reformats numbers, which busts provider prompt
+    // caches keyed on the exact prefix bytes.
+    if prepared.parsed.is_some() && prepared.parsed == original_parsed {
+        prepared.body = raw_body_bytes.to_vec();
+        compressed_size = original_size;
+    }
 
     let compression_candidate = prepared.compression_candidate;
     let content_dedup_tokens_saved = prepared.content_dedup_tokens_saved;
@@ -814,8 +829,9 @@ pub async fn forward_request(
             .or_else(|| prepared_body.get("input"))
             .and_then(serde_json::Value::as_array);
         if let Some(messages) = messages {
+            // Same session-stable score the effort stage injects (#1912).
             let task = crate::proxy::effort_routing::TaskComplexity::from_score(
-                crate::proxy::effort_routing::score_complexity(messages),
+                crate::proxy::effort_routing::score_session_complexity(messages),
             );
             if let Ok(value) = HeaderValue::from_str(&task.score.to_string()) {
                 headers.insert("x-leanctx-complexity", value);

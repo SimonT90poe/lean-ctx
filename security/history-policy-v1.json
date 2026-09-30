@@ -52,12 +52,12 @@
     "scripts/history-policy-gate.py": "6191eb7e86b7253aef09c9ef9bb5167ba599f91f9e23d43be61452d039511ba8",
     "tests/security/test_history_policy_gate.py": "ad6c71cadb5e5896ba926f9633249c571c9449af63605cc0d91c27ccbabfd108",
     "tests/security/test_security_check_workflow.py": "2d0c9b9a6ceb61c97379290d549bbdcf7812ce17db9794b5d1b067e2202c2844",
-    "rust/src/proxy/anthropic.rs": "3e363471975e122afaa10206a6cca9c854e04086827ac92b28fb5bf9eab0b38a",
-    "rust/src/proxy/anthropic_tests.rs": "dfcdf6880d7c4cdea2fc111f71ae29bc95a431e7161e702e435e67e730ab5b69"
+    "rust/src/proxy/anthropic.rs": "0f1f88e2f9e02b7aa6c6da54f612d026aa9dc8899f9756dfefc3cbd367fe5075",
+    "rust/src/proxy/anthropic_tests.rs": "84e9e7c1d1341772357c7dd67f6fb34010cbd5c75d713d852e9c4240c047c37b"
   },
   "baseline": {
     "commit": "bff280bfc8eba6959854fafcbf104b5745d794c3",
     "report": "security/evidence/full-history-baseline-v1.json",
-    "report_sha256": "16e6886348f6bb8d0226f85147ceb550c5aac9378da6943156935d6219df40b3"
+    "report_sha256": "5e78496ccd28fb3e3d4140ebcc8de38e4191a2d522d53e99c17de7aa35285a1f"
   }
 }

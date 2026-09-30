@@ -283,6 +283,22 @@ impl TaskComplexity {
     }
 }
 
+/// Scores a conversation from its **first** user message only (#1912).
+///
+/// The injected thinking budget is a top-level request field, and Anthropic
+/// invalidates cached message blocks whenever thinking parameters change. The
+/// opening request of a session never changes turn to turn, so scoring it pins
+/// the budget for the whole conversation instead of letting a growing history
+/// (new errors, a longer last turn) move it between tiers.
+pub fn score_session_complexity(messages: &[Value]) -> u8 {
+    messages
+        .iter()
+        .find(|message| message.get("role").and_then(Value::as_str) == Some("user"))
+        .map_or(1, |first_user| {
+            score_complexity(std::slice::from_ref(first_user))
+        })
+}
+
 /// Scores request complexity on a stable 1–5 scale.
 pub fn score_complexity(messages: &[Value]) -> u8 {
     let user_text = messages
@@ -322,8 +338,80 @@ pub fn route_effort_budget(body: &mut Value) -> TaskComplexity {
         .get("messages")
         .or_else(|| body.get("input"))
         .and_then(Value::as_array)
-        .map_or(1, |messages| score_complexity(messages));
+        .map_or(1, |messages| score_session_complexity(messages));
     apply_effort_budget(body, complexity)
+}
+
+/// Anthropic's floor for `thinking.budget_tokens`.
+const MIN_THINKING_BUDGET: u32 = 1_024;
+
+/// The thinking budget the proxy may inject into an Anthropic request, or
+/// `None` when injecting would change the request's meaning or be rejected.
+///
+/// Anthropic counts thinking against `max_tokens` and requires
+/// `budget_tokens < max_tokens`; the budget is capped at half of `max_tokens`
+/// so the answer the client sized `max_tokens` for keeps its room. Extended
+/// thinking also rejects a non-default `temperature`, `top_k`, a `top_p`
+/// below 0.95 and a forced `tool_choice`, and needs every prior assistant turn
+/// to carry its thinking blocks — a history produced without thinking gets no
+/// injection rather than a 400.
+fn anthropic_thinking_budget(
+    object: &serde_json::Map<String, Value>,
+    task: TaskComplexity,
+) -> Option<u32> {
+    let max_tokens = object.get("max_tokens").and_then(Value::as_u64)?;
+    let half = u32::try_from(max_tokens / 2).unwrap_or(u32::MAX);
+    let budget = task.budget_tokens.min(half);
+    if budget < MIN_THINKING_BUDGET {
+        return None;
+    }
+    if object
+        .get("temperature")
+        .and_then(Value::as_f64)
+        .is_some_and(|temperature| (temperature - 1.0).abs() > f64::EPSILON)
+        || object.contains_key("top_k")
+        || object
+            .get("top_p")
+            .and_then(Value::as_f64)
+            .is_some_and(|top_p| top_p < 0.95)
+    {
+        return None;
+    }
+    let forced_tool = object
+        .get("tool_choice")
+        .and_then(|choice| choice.get("type"))
+        .and_then(Value::as_str)
+        .is_some_and(|kind| matches!(kind, "any" | "tool"));
+    if forced_tool {
+        return None;
+    }
+    let assistants = object
+        .get("messages")
+        .and_then(Value::as_array)
+        .map(|messages| {
+            messages
+                .iter()
+                .filter(|message| message.get("role").and_then(Value::as_str) == Some("assistant"))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let history_has_thinking = assistants.iter().any(|message| {
+        message
+            .get("content")
+            .and_then(Value::as_array)
+            .is_some_and(|blocks| {
+                blocks.iter().any(|block| {
+                    matches!(
+                        block.get("type").and_then(Value::as_str),
+                        Some("thinking" | "redacted_thinking")
+                    )
+                })
+            })
+    });
+    if !assistants.is_empty() && !history_has_thinking {
+        return None;
+    }
+    Some(budget)
 }
 
 /// Whether an Anthropic model accepts the `thinking` parameter with a fixed
@@ -360,49 +448,68 @@ fn anthropic_supports_thinking(model: &str) -> bool {
 
 /// Calculates complexity for a request and applies its provider-native effort budget.
 pub fn apply_effort_budget(body: &mut Value, complexity: u8) -> TaskComplexity {
+    inject_effort_budget(body, complexity).0
+}
+
+/// Applies the provider-native effort budget and reports whether the body was
+/// changed, so callers can forward the client's original bytes when it was
+/// not (#1912).
+///
+/// A value the client already chose — `thinking`, `reasoning_effort` or
+/// `reasoning.effort` — is never overwritten.
+pub(crate) fn inject_effort_budget(body: &mut Value, complexity: u8) -> (TaskComplexity, bool) {
     let task = TaskComplexity::from_score(complexity);
     let Some(object) = body.as_object_mut() else {
-        return task;
+        return (task, false);
     };
 
     let model = object
         .get("model")
         .and_then(Value::as_str)
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .to_string();
     let is_anthropic = object.contains_key("messages")
         && (object.contains_key("max_tokens") || model.contains("claude"));
-    if is_anthropic && anthropic_supports_thinking(model) {
-        // Don't overwrite client-set thinking params
+    let mut injected_budget = None;
+    if is_anthropic && anthropic_supports_thinking(&model) {
         if object.get("thinking").is_none() {
-            let thinking = object
-                .entry("thinking")
-                .or_insert_with(|| Value::Object(serde_json::Map::new()));
-            if let Some(thinking) = thinking.as_object_mut() {
-                thinking.insert("type".into(), Value::String("enabled".into()));
-                thinking.insert("budget_tokens".into(), Value::from(task.budget_tokens));
+            if let Some(budget) = anthropic_thinking_budget(object, task) {
+                object.insert(
+                    "thinking".into(),
+                    serde_json::json!({"type": "enabled", "budget_tokens": budget}),
+                );
+                injected_budget = Some(budget);
             }
         }
-    } else if crate::proxy::effort::openai_supports_effort(model) {
-        if object.contains_key("reasoning_effort") {
-            object.insert(
-                "reasoning_effort".into(),
-                Value::String(openai_effort_value(task.effort).into()),
-            );
-        } else {
-            let reasoning = object
-                .entry("reasoning")
-                .or_insert_with(|| Value::Object(serde_json::Map::new()));
-            if let Some(reasoning) = reasoning.as_object_mut() {
-                reasoning.insert(
-                    "effort".into(),
-                    Value::String(openai_effort_value(task.effort).into()),
-                );
+    } else if crate::proxy::effort::openai_supports_effort(&model) {
+        let client_chose = object.contains_key("reasoning_effort")
+            || object
+                .get("reasoning")
+                .is_some_and(|reasoning| reasoning.get("effort").is_some());
+        if !client_chose {
+            let effort = Value::String(openai_effort_value(task.effort).into());
+            if object.contains_key("messages") {
+                // Chat Completions takes the flat `reasoning_effort` field.
+                object.insert("reasoning_effort".into(), effort);
+                injected_budget = Some(task.budget_tokens);
+            } else if object.contains_key("input") {
+                // The Responses API nests it under `reasoning`.
+                let reasoning = object
+                    .entry("reasoning")
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                if let Some(reasoning) = reasoning.as_object_mut() {
+                    reasoning.insert("effort".into(), effort);
+                    injected_budget = Some(task.budget_tokens);
+                }
             }
         }
     }
+    let Some(budget) = injected_budget else {
+        return (task, false);
+    };
     ESTIMATED_OUTPUT_TOKENS_WITHOUT_ROUTING.fetch_add(16_384, Ordering::Relaxed);
-    ACTUAL_EFFORT_BUDGET_TOKENS.fetch_add(task.budget_tokens.into(), Ordering::Relaxed);
-    task
+    ACTUAL_EFFORT_BUDGET_TOKENS.fetch_add(budget.into(), Ordering::Relaxed);
+    (task, true)
 }
 
 fn openai_effort_value(effort: Effort) -> &'static str {
@@ -445,10 +552,108 @@ mod output_token_intelligence_tests {
 
     #[test]
     fn applies_anthropic_thinking_budget() {
-        let mut body = json!({"model": "claude-sonnet-4", "max_tokens": 4096, "messages": []});
+        let mut body = json!({"model": "claude-sonnet-4", "max_tokens": 32_000, "messages": []});
         let task = apply_effort_budget(&mut body, 4);
         assert_eq!(task.budget_tokens, 8_192);
         assert_eq!(body["thinking"]["budget_tokens"], 8_192);
+        assert_eq!(body["thinking"]["type"], "enabled");
+    }
+
+    #[test]
+    fn thinking_budget_stays_below_max_tokens() {
+        // #1912: Anthropic requires budget_tokens < max_tokens, and thinking
+        // eats into max_tokens — cap at half so the answer keeps its room.
+        let mut body = json!({"model": "claude-sonnet-4-5", "max_tokens": 4096, "messages": []});
+        let (_, changed) = inject_effort_budget(&mut body, 5);
+        assert!(changed);
+        let budget = body["thinking"]["budget_tokens"].as_u64().unwrap();
+        assert_eq!(budget, 2_048);
+        assert!(budget < 4096);
+    }
+
+    #[test]
+    fn small_max_tokens_gets_no_thinking() {
+        // Half of 1024 is below Anthropic's 1024 floor; injecting would 400.
+        for max_tokens in [1_024, 2_047] {
+            let mut body =
+                json!({"model": "claude-sonnet-4-5", "max_tokens": max_tokens, "messages": []});
+            let (_, changed) = inject_effort_budget(&mut body, 5);
+            assert!(!changed, "max_tokens {max_tokens} must not get thinking");
+            assert!(body.get("thinking").is_none());
+        }
+        let mut body = json!({"model": "claude-sonnet-4-5", "messages": []});
+        assert!(
+            !inject_effort_budget(&mut body, 5).1,
+            "no max_tokens → no injection"
+        );
+    }
+
+    #[test]
+    fn skips_thinking_when_sampling_or_tool_choice_conflicts() {
+        let base = json!({"model": "claude-sonnet-4-5", "max_tokens": 32_000, "messages": []});
+        for (key, value) in [
+            ("temperature", json!(0.2)),
+            ("top_k", json!(40)),
+            ("top_p", json!(0.5)),
+            ("tool_choice", json!({"type": "any"})),
+            ("tool_choice", json!({"type": "tool", "name": "x"})),
+        ] {
+            let mut body = base.clone();
+            body[key] = value.clone();
+            let (_, changed) = inject_effort_budget(&mut body, 4);
+            assert!(!changed, "{key}={value} must block thinking");
+            assert!(body.get("thinking").is_none());
+        }
+        let mut body = base.clone();
+        body["temperature"] = json!(1.0);
+        body["tool_choice"] = json!({"type": "auto"});
+        assert!(
+            inject_effort_budget(&mut body, 4).1,
+            "defaults must still inject"
+        );
+    }
+
+    #[test]
+    fn skips_thinking_when_history_has_no_thinking_blocks() {
+        // Enabling thinking mid-conversation on a history produced without
+        // it would be rejected; a history that carries thinking is fine.
+        let mut body = json!({
+            "model": "claude-sonnet-4-5",
+            "max_tokens": 32_000,
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": [{"type": "text", "text": "hello"}]},
+                {"role": "user", "content": "debug this"}
+            ]
+        });
+        assert!(!inject_effort_budget(&mut body, 4).1);
+        assert!(body.get("thinking").is_none());
+
+        body["messages"][1]["content"] = json!([
+            {"type": "thinking", "thinking": "…", "signature": "sig"},
+            {"type": "text", "text": "hello"}
+        ]);
+        assert!(inject_effort_budget(&mut body, 4).1);
+    }
+
+    #[test]
+    fn session_score_is_stable_across_turns() {
+        // #1912: the budget must not move as the conversation grows, or every
+        // turn invalidates Anthropic's message cache.
+        let first = json!({"role": "user", "content": "rename a variable"});
+        let turn_one = vec![first.clone()];
+        let turn_two = vec![
+            first,
+            json!({"role": "assistant", "content": "done"}),
+            json!({"role": "tool", "content": "error[E0308]: mismatched types"}),
+            json!({"role": "user", "content": "debug the production security incident"}),
+        ];
+        assert_eq!(
+            score_session_complexity(&turn_one),
+            score_session_complexity(&turn_two)
+        );
+        assert_ne!(score_complexity(&turn_one), score_complexity(&turn_two));
+        assert_eq!(score_session_complexity(&[]), 1);
     }
 
     #[test]
@@ -544,7 +749,7 @@ mod output_token_intelligence_tests {
             "claude-sonnet-4-20250514",
             "claude-opus-4-20250514",
         ] {
-            let mut body = json!({"model": model, "max_tokens": 4096, "messages": []});
+            let mut body = json!({"model": model, "max_tokens": 32_000, "messages": []});
             apply_effort_budget(&mut body, 4);
             assert_eq!(
                 body["thinking"]["budget_tokens"], 8_192,
@@ -555,9 +760,30 @@ mod output_token_intelligence_tests {
 
     #[test]
     fn applies_openai_reasoning_effort() {
+        // Chat Completions takes the flat field; `reasoning` is Responses-only.
         let mut body = json!({"model": "gpt-5.4", "messages": []});
-        apply_effort_budget(&mut body, 3);
+        assert!(inject_effort_budget(&mut body, 3).1);
+        assert_eq!(body["reasoning_effort"], "medium");
+        assert!(body.get("reasoning").is_none());
+
+        let mut body = json!({"model": "gpt-5.4", "input": []});
+        assert!(inject_effort_budget(&mut body, 3).1);
         assert_eq!(body["reasoning"]["effort"], "medium");
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn keeps_client_openai_effort() {
+        // #1912: a client-chosen effort is the client's decision.
+        let mut body = json!({"model": "gpt-5.4", "messages": [], "reasoning_effort": "high"});
+        let before = body.clone();
+        assert!(!inject_effort_budget(&mut body, 1).1);
+        assert_eq!(body, before);
+
+        let mut body = json!({"model": "gpt-5.4", "input": [], "reasoning": {"effort": "minimal"}});
+        let before = body.clone();
+        assert!(!inject_effort_budget(&mut body, 5).1);
+        assert_eq!(body, before);
     }
 }
 
