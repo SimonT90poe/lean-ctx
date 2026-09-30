@@ -371,7 +371,6 @@ pub mod mcp_catalog;
 pub mod metering;
 pub mod nudge;
 pub mod ocla;
-pub mod ocla_bus;
 pub(crate) mod quality_benchmark;
 pub(crate) mod qubo_select;
 

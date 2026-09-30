@@ -21,7 +21,6 @@ wire definitions; documents here describe their use and surrounding systems.
 |---|---|---|---|
 | [ocla-wire-v1.schema.json](ocla-wire-v1.schema.json) | JSON Schema | Current | v1 |
 | [ocla-agent-envelope-v1.schema.json](ocla-agent-envelope-v1.schema.json) | JSON Schema | Current | v1 |
-| [ocla-bus-event-v1.schema.json](ocla-bus-event-v1.schema.json) | JSON Schema | Current | v1 |
 | [ocla-contract-pack-v1.json](ocla-contract-pack-v1.json) | JSON | Current | v1 |
 | [conformance-v1.md](conformance-v1.md) | Markdown | Current | v1 |
 | [DEPRECATION.md](DEPRECATION.md) | Markdown | Current | v1 |
@@ -32,7 +31,6 @@ wire definitions; documents here describe their use and surrounding systems.
 
 - [agent-gateway-v1.schema.json](agent-gateway-v1.schema.json) — Agent gateway wire schema.
 - [ocla-agent-envelope-v1.schema.json](ocla-agent-envelope-v1.schema.json) — OCLA agent envelope.
-- [ocla-bus-event-v1.schema.json](ocla-bus-event-v1.schema.json) — OclaBus events.
 - [ocla-wire-v1.schema.json](ocla-wire-v1.schema.json) — Canonical Token Envelope.
 - [response-optimization-v1.schema.json](response-optimization-v1.schema.json) — Response optimization wire schema.
 - [routing-decision-v1.schema.json](routing-decision-v1.schema.json) — Routing decision wire schema.

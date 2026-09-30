@@ -633,7 +633,8 @@ async fn a2a_jsonrpc(Json(body): Json<Value>) -> impl IntoResponse {
 }
 
 async fn v1_a2a_agent_card(State(state): State<AppState>) -> impl IntoResponse {
-    let card = crate::core::a2a::agent_card::build_agent_card(&state.project_root);
+    let card =
+        crate::core::a2a::agent_card::build_agent_card(&state.project_root, state.token.is_some());
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/json")],
@@ -642,7 +643,44 @@ async fn v1_a2a_agent_card(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 async fn mcp_server_card() -> impl IntoResponse {
-    let card = serde_json::json!({
+    Json(mcp_server_card_value())
+}
+
+/// Category tools pass the same public-surface filter as `tools/list`, so the
+/// card cannot advertise hidden or compiled-out tools (#1913).
+fn mcp_server_card_value() -> Value {
+    let categories: Vec<Value> = [
+        (
+            "file_operations",
+            &["ctx_read", "ctx_search", "ctx_tree", "ctx_edit"][..],
+            150,
+        ),
+        (
+            "session_management",
+            &["ctx_session", "ctx_compress", "ctx_dedup", "ctx_preload"][..],
+            80,
+        ),
+        (
+            "intelligence",
+            &[
+                "ctx_knowledge",
+                "ctx_semantic_search",
+                "ctx_graph",
+                "ctx_overview",
+            ][..],
+            200,
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(name, tools, avg_token_cost)| {
+        let tools = crate::core::a2a::agent_card::advertised_tools(tools);
+        (!tools.is_empty()).then(
+            || serde_json::json!({"name": name, "tools": tools, "avg_token_cost": avg_token_cost}),
+        )
+    })
+    .collect();
+
+    serde_json::json!({
         "name": "lean-ctx",
         "version": env!("CARGO_PKG_VERSION"),
         "description": "Context Infrastructure Layer — compression, caching, governance for AI agents",
@@ -652,12 +690,7 @@ async fn mcp_server_card() -> impl IntoResponse {
             "prompts": false,
             "sampling": false
         },
-        "tool_categories": [
-            {"name": "file_operations", "tools": ["ctx_read", "ctx_search", "ctx_tree", "ctx_edit"], "avg_token_cost": 150},
-            {"name": "session_management", "tools": ["ctx_session", "ctx_compress", "ctx_dedup", "ctx_preload"], "avg_token_cost": 80},
-            {"name": "intelligence", "tools": ["ctx_knowledge", "ctx_semantic_search", "ctx_graph", "ctx_overview"], "avg_token_cost": 200},
-            {"name": "agent_ops", "tools": ["ctx_agent", "ctx_handoff", "ctx_task", "ctx_share"], "avg_token_cost": 120}
-        ],
+        "tool_categories": categories,
         "features": {
             "compression": "deterministic AST-based, 40-70% token reduction",
             "caching": "session-scoped with zstd, unchanged full/auto re-reads ~13 tokens",
@@ -670,11 +703,9 @@ async fn mcp_server_card() -> impl IntoResponse {
             "path_jail": true,
             "rate_limiting": true,
             "budget_tracking": true,
-            "signed_handoffs": true,
             "timing_safe_auth": true
         }
-    });
-    Json(card)
+    })
 }
 
 async fn v1_agents_register(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
@@ -1291,6 +1322,56 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.get("cross_project_events").unwrap().is_array());
         assert!(json.get("audit_trail").unwrap().is_array());
+    }
+
+    // #1913: the agent card's auth scheme matches what the router enforces,
+    // and both discovery documents list only tools `tools/list` publishes.
+    #[tokio::test]
+    async fn discovery_documents_match_the_served_surface() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = HttpServerConfig {
+            project_root: dir.path().to_path_buf(),
+            auth_token: Some("secret".to_string()),
+            ..HttpServerConfig::default()
+        };
+
+        for (require_auth, scheme) in [(true, "bearer"), (false, "none")] {
+            let app = build_app_router_with_auth(&cfg, require_auth);
+            let req = Request::builder()
+                .method("GET")
+                .uri("/.well-known/agent.json")
+                .header("Host", "localhost")
+                .header("Authorization", "Bearer secret")
+                .body(Body::empty())
+                .expect("request");
+            let resp = app.oneshot(req).await.expect("resp");
+            assert_eq!(resp.status(), StatusCode::OK);
+            let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+                .await
+                .expect("body");
+            let card: Value = serde_json::from_slice(&body).expect("json");
+            assert_eq!(card["authentication"]["schemes"], json!([scheme]));
+        }
+
+        let published: Vec<String> = crate::server::registry::build_registry()
+            .tool_defs()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        let card = mcp_server_card_value();
+        let categories = card["tool_categories"].as_array().expect("categories");
+        assert!(!categories.is_empty());
+        for category in categories {
+            assert_ne!(category["name"], "agent_ops");
+            for tool in category["tools"].as_array().expect("tools") {
+                let name = tool.as_str().expect("name");
+                assert!(
+                    published.iter().any(|p| p == name),
+                    "{name} is not published"
+                );
+            }
+        }
+        assert!(card["security"].get("signed_handoffs").is_none());
     }
 
     #[tokio::test]

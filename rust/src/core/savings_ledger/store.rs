@@ -22,7 +22,6 @@ use super::event::{
 use super::evidence_projection::{
     LedgerProjectionErrorV2, MAX_LEDGER_SNAPSHOT_BYTES_V2, VerifiedLedgerSnapshotV2,
 };
-use crate::core::ocla_bus::{self, FeedbackOutcome, OclaEvent};
 
 pub const GENESIS: &str = "genesis";
 const TAIL_READ_BYTES: u64 = 8192;
@@ -632,38 +631,15 @@ where
     result
 }
 
-fn emit_approval_change(entry_hash: &str, approval: &CustomerApproval) {
-    let outcome = match approval {
-        CustomerApproval::Approved => FeedbackOutcome::Accept,
-        CustomerApproval::Disputed | CustomerApproval::Superseded => FeedbackOutcome::Reject,
-        CustomerApproval::Pending => FeedbackOutcome::Partial,
-    };
-    ocla_bus::emit(OclaEvent::FeedbackRecorded {
-        session_id: entry_hash.to_string(),
-        outcome,
-        tool: Some("savings_ledger".to_string()),
-    });
-}
-
-fn emit_settlement_change(entry_hash: &str, status: &SettlementStatus) {
-    ocla_bus::emit(OclaEvent::OutcomeRecorded {
-        session_id: entry_hash.to_string(),
-        accepted: matches!(status, SettlementStatus::Settled),
-        implicit: false,
-    });
-}
-
 /// Marks one ledger event with the customer's approval state and re-chains the ledger.
 pub fn approve_event(
     path: &Path,
     entry_hash: &str,
     approval: &CustomerApproval,
 ) -> std::io::Result<SavingsEvent> {
-    let event = update_event(path, entry_hash, |event| {
+    update_event(path, entry_hash, |event| {
         event.customer_approval = Some(approval.clone());
-    })?;
-    emit_approval_change(&event.entry_hash, approval);
-    Ok(event)
+    })
 }
 
 /// Marks one ledger event with its settlement state and re-chains the ledger.
@@ -672,11 +648,9 @@ pub fn settle_event(
     entry_hash: &str,
     status: &SettlementStatus,
 ) -> std::io::Result<SavingsEvent> {
-    let event = update_event(path, entry_hash, |event| {
+    update_event(path, entry_hash, |event| {
         event.settlement_status = Some(status.clone());
-    })?;
-    emit_settlement_change(&event.entry_hash, status);
-    Ok(event)
+    })
 }
 
 /// Returns positive-savings events that have not received customer approval.

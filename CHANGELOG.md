@@ -80,6 +80,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   (`predictive_prefetch`, `multiscale_index`, `context_column`, `ocp`,
   `solution_rules`, `solution_types`).
 
+### Fixed — the agent surface advertises only what actually works (#1913)
+
+- `/.well-known/agent.json` and `/.well-known/mcp-server.json` list only tools
+  that are callable through `tools/list` and `/v1/tools`, and a test holds the
+  three in sync. The agent card's authentication schemes now match what `/a2a`
+  enforces.
+- `/a2a` no longer takes the sender from `message.role`, so `"role":"user"` is
+  never recorded as an agent id. `message/send` is supported, and
+  `tasks/cancel` is refused for a task the caller does not own.
+- `ctx_agent` leases live in `<data_dir>/agents/leases.json` under a file lock.
+  A second lean-ctx process gets `Lease HELD` for a path another agent holds.
+  Before, each MCP server had its own in-memory table. A corrupt lease store
+  fails closed instead of handing out held resources.
+- The `ctx_agent` action enum had a merged
+  `receive_knowledge|lease_acquire|lease_release` entry and was missing
+  `export` and `poll_events`. The enum now comes from the dispatcher's action
+  list, and the schema documents `ttl_hours`.
+- Removed `OclaBus` and its event schema. It was never enabled, so every emit
+  was a no-op that production could not observe.
+- The self-pilot evidence reports its 43 agents as registered identities, not
+  as agent-bus coordination.
+
 ### Fixed — Windows: a timed-out or cancelled command no longer leaves processes behind (#1920)
 
 - On Windows, `ctx_shell`, `ctx_execute` and the sandbox only ended the shell
