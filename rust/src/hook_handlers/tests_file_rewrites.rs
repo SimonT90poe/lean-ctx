@@ -432,6 +432,14 @@ fn is_outside_project_path_tests() {
     assert!(!is_outside_project_path("./Cargo.toml"));
     assert!(!is_outside_project_path("../sibling/file.rs"));
     assert!(!is_outside_project_path("file.txt"));
+
+    // #1903: anything the jailed `lean-ctx read` refuses stays native.
+    assert!(is_outside_project_path("../../../../../../../../etc/hosts"));
+    assert!(is_outside_project_path("/etc/hosts"));
+    assert_eq!(
+        rewrite_file_read_command("cat ../../../../../../../../etc/hosts", "lean-ctx"),
+        None
+    );
 }
 
 #[test]

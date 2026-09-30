@@ -106,6 +106,7 @@ pub(crate) fn cmd_knowledge(args: &[String]) {
             );
             println!("{out}");
         }
+        Some("help" | "-h") => print_help(),
         _ => {
             print_help();
             if action.is_some() {
@@ -721,7 +722,7 @@ fn positional_after(args: &[String], subcommand: &str) -> Option<String> {
 }
 
 fn print_help() {
-    eprintln!(
+    println!(
         "\
 lean-ctx knowledge — Project knowledge base
 

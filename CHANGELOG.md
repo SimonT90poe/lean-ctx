@@ -43,6 +43,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   opts back in for integrations that run one agent per process. The
   CLAUDE.md block (v10) drops the "re-reads ~13 tokens" claim.
 
+### Security — `lean-ctx read` is jailed like `ctx_read`; `--help` never runs a command (#1901, #1903, #1906)
+
+- `lean-ctx read` enforces the same boundary as MCP `ctx_read`, with the same
+  error text: the PathJail (project root, `allow_paths`, extra and read-only
+  roots, the lean-ctx state dir) and the secret-path policy. Before, it read
+  files outside the project with only a warning. A relative path resolves
+  against the current directory. A broad root (home, `/`, an agent config
+  dir) is refused unless `path_jail = false`.
+- Shell-hook rewrites leave a `cat` that the jailed read would refuse on the
+  native command, so a working command never turns into an access error.
+- A git worktree under `<repo>/.claude/worktrees/<name>` counts as a project,
+  not as agent config.
+- `lean-ctx <command> --help` prints help and never runs the command. Before,
+  `pack --help` built a PR pack, `secure --help` rewrote the config,
+  `proof --help` wrote proof artifacts, `skillify --help` generated rules and
+  `upgrade --help` installed a release. The dispatcher now answers `--help`
+  centrally from the `help all` reference. It passes the flag on only to
+  handlers whose own help is verified side-effect free, and a test fails when
+  a new command is left unclassified.
+- `upgrade` forwards its arguments to `update`, so `upgrade --check` only
+  checks.
+- `init --agent claude` no longer stacks another solution-rules block on
+  every run when CLAUDE.md prose mentions the `<!-- lean-ctx -->` marker. Only
+  whole marker lines count as blocks, and a strip removes the solution block
+  together with the lean-ctx block.
+
 ### Fixed — quality claims match what the gates can show (#1905)
 
 - `lean-ctx eval ab` reports now print `POWER: underpowered` when a run has

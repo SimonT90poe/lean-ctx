@@ -509,7 +509,7 @@ pub(super) fn cmd_serve(rest: &[String]) {
                     }
                 }
                 "--help" | "-h" => {
-                    eprintln!(
+                    println!(
                         "Usage: lean-ctx serve [--host H] [--port N] [--project-root DIR] [--daemon] [--stop] [--status]\n\
                          \n\
                          Options:\n  \

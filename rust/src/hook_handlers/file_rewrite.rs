@@ -631,8 +631,8 @@ fn rewrite_get_content(parts: &[String], binary: &str) -> Option<String> {
 }
 
 /// Returns true if the path clearly points outside the current project.
-/// Paths starting with `~`, `$`, or absolute paths that don't resolve
-/// within the working directory should not be intercepted.
+/// Paths starting with `~`, `$`, well-known system/config locations, and any
+/// path the jailed `lean-ctx read` would refuse should not be intercepted.
 pub(super) fn is_outside_project_path(path: &str) -> bool {
     let trimmed = path.trim();
 
@@ -670,7 +670,9 @@ pub(super) fn is_outside_project_path(path: &str) -> bool {
         }
     }
 
-    false
+    // #1903: `lean-ctx read` enforces the PathJail, so anything it would refuse
+    // (`../../etc/hosts`, a sibling checkout, a broad-root CWD) stays native.
+    crate::cli::cli_read_is_refused(trimmed)
 }
 
 /// #1537: whether a head/tail invocation uses byte-count semantics (`-c N`,

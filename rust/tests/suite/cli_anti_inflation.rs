@@ -22,6 +22,9 @@ use lean_ctx::core::tokens::count_tokens;
 fn read_auto(bin: &str, home: &Path, data_dir: &Path, file: &Path) -> String {
     let out = Command::new(bin)
         .args(["read", file.to_str().unwrap(), "--mode", "auto"])
+        // `lean-ctx read` is jailed to the project root (#1903): run from the
+        // fixture dir so it is the project.
+        .current_dir(file.parent().unwrap())
         .env("LEAN_CTX_HOOK_CHILD", "1")
         .env("HOME", home)
         .env("XDG_DATA_HOME", home.join("share"))

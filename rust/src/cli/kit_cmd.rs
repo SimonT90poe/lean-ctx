@@ -97,7 +97,7 @@ fn unload_kit() {
 }
 
 fn print_help() {
-    eprintln!(
+    println!(
         "Usage: lean-ctx kit <list|load|show|unload> [name]\n\nAvailable local TOML/.ctxpkg substrate; first-class Context Kit semantics are Research.\n  lean-ctx kit load code-review"
     );
 }

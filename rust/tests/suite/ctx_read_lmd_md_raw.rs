@@ -33,6 +33,8 @@ fn ctx_read_lmd_md_returns_raw_source() {
 
     let out = Command::new(LEAN_CTX_BIN)
         .env("LEAN_CTX_DATA_DIR", data_dir.path())
+        // `lean-ctx read` is jailed to the project root (#1903).
+        .current_dir(fixture.path())
         .args(["read", f.to_str().unwrap(), "--mode", "full", "--fresh"])
         .output()
         .expect("lean-ctx read");

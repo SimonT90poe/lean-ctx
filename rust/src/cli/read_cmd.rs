@@ -144,6 +144,41 @@ fn push_signature_lines(
     }
 }
 
+/// #1903: `lean-ctx read` enforces the same boundary as MCP `ctx_read` — the
+/// PathJail (project root + `allow_paths`/`extra_roots`/`read_only_roots` + the
+/// lean-ctx state dir) and the secret-path policy — with the same error text.
+/// A relative path is resolved against the process CWD (a shell user's
+/// intent), never re-anchored at the project root. A broad root (home, `/`,
+/// agent config dir) is refused like `lean-ctx call` does, unless the jail is
+/// disabled (`path_jail = false`), because jailing to `~` would admit every
+/// file the user owns.
+pub(crate) fn jail_cli_read_path(raw: &str, project_root: &str) -> Result<String, String> {
+    let candidate = if Path::new(raw).is_relative() {
+        std::env::current_dir().map_or_else(
+            |_| raw.to_string(),
+            |cwd| cwd.join(raw).to_string_lossy().into_owned(),
+        )
+    } else {
+        raw.to_string()
+    };
+    let jail_disabled = crate::core::config::Config::load().path_jail == Some(false);
+    if !jail_disabled && crate::core::pathutil::is_broad_or_unsafe_root(Path::new(project_root)) {
+        return Err(format!(
+            "path escapes project root: {candidate} (root: {project_root}). Access denied: \
+             no project detected — run inside a project, or pass --root <dir> \
+             (or set LEAN_CTX_PROJECT_ROOT)"
+        ));
+    }
+    crate::core::path_resolve::resolve_tool_path(Some(project_root), None, &candidate)
+}
+
+/// Whether `lean-ctx read <raw>` from this process would be refused (#1903).
+/// Shell-hook rewriters keep such reads on the native command instead of
+/// turning a working `cat` into an access-denied error.
+pub(crate) fn cli_read_is_refused(raw: &str) -> bool {
+    jail_cli_read_path(raw, &super::common::detect_project_root(&[])).is_err()
+}
+
 pub fn cmd_read(args: &[String]) {
     if args.is_empty() {
         eprintln!(
@@ -153,13 +188,13 @@ pub fn cmd_read(args: &[String]) {
     }
 
     let raw_path = &args[0];
-    let path = if Path::new(raw_path).is_relative() {
-        std::env::current_dir().ok().map_or_else(
-            || raw_path.clone(),
-            |cwd| cwd.join(raw_path).to_string_lossy().into_owned(),
-        )
-    } else {
-        raw_path.clone()
+    let project_root = super::common::detect_project_root(args);
+    let path = match jail_cli_read_path(raw_path, &project_root) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
     };
     let path = path.as_str();
     let mode = resolve_cli_read_mode(args);
@@ -974,6 +1009,73 @@ mod fresh_tests {
         assert!(should_force_fresh(&["--fresh".to_string()], false));
         assert!(should_force_fresh(&["--no-cache".to_string()], false));
         assert!(!should_force_fresh(&["file.rs".to_string()], false));
+    }
+}
+
+/// #1903: the CLI read boundary must match MCP `ctx_read` (same resolver,
+/// same verdict, same error text).
+#[cfg(test)]
+mod jail_parity_tests {
+    use super::jail_cli_read_path;
+    use crate::core::path_resolve::resolve_tool_path;
+
+    fn project() -> (tempfile::TempDir, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("inside.txt"), "in").unwrap();
+        std::fs::write(tmp.path().join("outside.txt"), "out").unwrap();
+        (tmp, root.to_string_lossy().into_owned())
+    }
+
+    #[test]
+    fn out_of_root_read_is_denied_like_mcp() {
+        let (_tmp, root) = project();
+        for raw in [
+            format!("{root}/../outside.txt"),
+            format!("{root}/../../../../../../etc/hosts"),
+        ] {
+            let cli = jail_cli_read_path(&raw, &root).expect_err("CLI must deny out-of-root");
+            let mcp = resolve_tool_path(Some(&root), None, &raw).expect_err("MCP denies");
+            assert_eq!(cli, mcp, "CLI and MCP must refuse with the same text");
+            assert!(cli.contains("path escapes project root"), "{cli}");
+        }
+    }
+
+    #[test]
+    fn in_root_read_resolves_like_mcp() {
+        let (_tmp, root) = project();
+        let raw = format!("{root}/inside.txt");
+        let cli = jail_cli_read_path(&raw, &root).unwrap();
+        assert_eq!(cli, resolve_tool_path(Some(&root), None, &raw).unwrap());
+        assert_eq!(std::fs::read_to_string(&cli).unwrap(), "in");
+    }
+
+    #[test]
+    fn broad_root_is_refused() {
+        let Some(home) = dirs::home_dir() else { return };
+        let home = home.to_string_lossy().into_owned();
+        let err = jail_cli_read_path(&format!("{home}/.profile"), &home).unwrap_err();
+        assert!(err.contains("no project detected"), "{err}");
+    }
+
+    #[test]
+    fn secret_path_enforcement_matches_mcp() {
+        let _env = crate::core::data_dir::test_env_lock();
+        let (_tmp, root) = project();
+        let secret = format!("{root}/.env");
+        std::fs::write(&secret, "TOKEN=x").unwrap();
+        let prev = std::env::var("LEAN_CTX_IO_BOUNDARY_MODE").ok();
+        crate::test_env::set_var("LEAN_CTX_IO_BOUNDARY_MODE", "enforce");
+        let cli = jail_cli_read_path(&secret, &root);
+        let mcp = resolve_tool_path(Some(&root), None, &secret);
+        match prev {
+            Some(v) => crate::test_env::set_var("LEAN_CTX_IO_BOUNDARY_MODE", v),
+            None => crate::test_env::remove_var("LEAN_CTX_IO_BOUNDARY_MODE"),
+        }
+        let cli = cli.expect_err("enforce mode must refuse a secret path");
+        assert_eq!(cli, mcp.unwrap_err());
+        assert!(cli.contains("Secret-like path"), "{cli}");
     }
 }
 

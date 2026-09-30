@@ -125,7 +125,7 @@ fn cmd_init(ops: &ContextOps) {
 }
 
 fn print_help() {
-    eprintln!(
+    println!(
         "lean-ctx rules — Cross-agent rules governance (ContextOps)\n\
          \n\
          USAGE:\n    \

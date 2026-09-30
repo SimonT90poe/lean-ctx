@@ -3,7 +3,7 @@ use super::super::{
     mcp_server_quiet_mode, resolve_binary_path_for_bash, resolve_hook_command_binary,
     shell_quoted_binary, write_file, write_wrapper_file,
 };
-use super::shared::remove_all_blocks;
+use super::shared::{contains_managed_md_block, managed_md_is_current, remove_managed_md_blocks};
 
 pub(crate) fn install_codebuddy_permissions_deny_replace(home: &std::path::Path) {
     let settings_path =
@@ -241,17 +241,16 @@ fn install_codebuddy_global_codebuddy_md_for_mode(home: &std::path::Path, mode: 
     } else {
         format!("{base_block}\n\n{solution_block}")
     };
-    let block_count = existing.matches(CODEBUDDY_MD_BLOCK_START).count();
     let is_replace_block = existing.contains("denied by policy");
     let mode_matches = matches!(mode, HookMode::Replace) == is_replace_block;
-    if block_count == 1
+    if managed_md_is_current(&existing, CODEBUDDY_MD_BLOCK_START, &block)
         && existing.contains(CODEBUDDY_MD_BLOCK_VERSION)
-        && existing.contains(&block)
         && mode_matches
     {
         return;
     }
-    let cleaned = remove_all_blocks(&existing, CODEBUDDY_MD_BLOCK_START, CODEBUDDY_MD_BLOCK_END);
+    let cleaned =
+        remove_managed_md_blocks(&existing, CODEBUDDY_MD_BLOCK_START, CODEBUDDY_MD_BLOCK_END);
     let cleaned = cleaned.trim();
     let updated = if cleaned.is_empty() {
         format!("{block}\n")
@@ -265,10 +264,11 @@ fn strip_codebuddy_md_block(codebuddy_md_path: &std::path::Path) {
     let Ok(existing) = std::fs::read_to_string(codebuddy_md_path) else {
         return;
     };
-    if !existing.contains(CODEBUDDY_MD_BLOCK_START) {
+    if !contains_managed_md_block(&existing, CODEBUDDY_MD_BLOCK_START) {
         return;
     }
-    let cleaned = remove_all_blocks(&existing, CODEBUDDY_MD_BLOCK_START, CODEBUDDY_MD_BLOCK_END);
+    let cleaned =
+        remove_managed_md_blocks(&existing, CODEBUDDY_MD_BLOCK_START, CODEBUDDY_MD_BLOCK_END);
     if cleaned.trim().is_empty() {
         let _ = std::fs::remove_file(codebuddy_md_path);
     } else {

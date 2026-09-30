@@ -237,11 +237,26 @@ pub const AGENT_CONFIG_DIRS: &[&str] = &[
 /// Returns `true` if `dir` is — or lies inside — a known agent/IDE config dir
 /// ([`AGENT_CONFIG_DIRS`]). Separator-agnostic so Windows backslash paths
 /// (`C:\Users\me\.copilot`) match too; #580 is a Windows Copilot report.
+///
+/// A checkout inside `<dir>/worktrees/<name>` (where Claude Code places its
+/// git worktrees, e.g. `<repo>/.claude/worktrees/fix-x`) is a real project,
+/// not agent config, and is exempt; `<dir>/worktrees` itself is not.
 pub fn is_agent_config_dir(dir: &Path) -> bool {
     let s = dir.to_string_lossy().replace('\\', "/");
-    AGENT_CONFIG_DIRS
-        .iter()
-        .any(|name| s.ends_with(&format!("/{name}")) || s.contains(&format!("/{name}/")))
+    AGENT_CONFIG_DIRS.iter().any(|name| {
+        let segment = format!("/{name}");
+        s.match_indices(&segment).any(|(at, _)| {
+            let tail = &s[at + segment.len()..];
+            (tail.is_empty() || tail.starts_with('/')) && !is_worktree_checkout_tail(tail)
+        })
+    })
+}
+
+/// `tail` (the path after an agent dir) names `/worktrees/<name>[/...]`.
+fn is_worktree_checkout_tail(tail: &str) -> bool {
+    tail.strip_prefix("/worktrees/")
+        .and_then(|rest| rest.split('/').next())
+        .is_some_and(|name| !name.is_empty())
 }
 
 fn is_wsl_windows_user_profile(dir: &Path) -> bool {
@@ -891,6 +906,31 @@ mod tests {
             let nested = format!("/home/user/{name}/mcp");
             assert!(is_agent_config_dir(Path::new(&nested)), "{nested}");
         }
+    }
+
+    #[test]
+    fn claude_code_worktree_checkout_is_not_agent_config() {
+        // Claude Code puts git worktrees at `<repo>/.claude/worktrees/<name>`;
+        // those are the user's project, not agent config (#1903 regression).
+        for p in [
+            "/repo/.claude/worktrees/fix-x",
+            "/repo/.claude/worktrees/fix-x/rust/src",
+            r"C:\repo\.claude\worktrees\fix-x",
+        ] {
+            assert!(!is_agent_config_dir(Path::new(p)), "{p}");
+            assert!(!is_broad_or_unsafe_root(Path::new(p)), "{p}");
+        }
+        for p in [
+            "/repo/.claude/worktrees",
+            "/repo/.claude/worktrees/",
+            "/repo/.claude/settings",
+            "/repo/.claude/worktrees/fix-x/.claude",
+            "/repo/.claude/worktrees/fix-x/.codex/mcp",
+            "/home/user/.claude/worktreesx/a",
+        ] {
+            assert!(is_agent_config_dir(Path::new(p)), "{p}");
+        }
+        assert!(!is_agent_config_dir(Path::new("/repo/.claudex/a")));
     }
 
     #[test]

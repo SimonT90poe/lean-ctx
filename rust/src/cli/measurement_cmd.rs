@@ -61,7 +61,7 @@ fn usage_error() {
     std::process::exit(2);
 }
 fn print_usage() {
-    eprintln!(
+    println!(
         "Usage: lean-ctx measure <baseline-start|baseline-stop|treatment-start|treatment-stop|compare|report> [--format markdown|json]"
     );
 }
