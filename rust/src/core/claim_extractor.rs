@@ -186,9 +186,15 @@ pub mod tests {
 
     #[test]
     fn pathjail_escape_is_a_failed_claim() {
+        // Hold the env lock with a clean config: parallel pathjail tests set
+        // LEAN_CTX_ALLOW_PATH=/ under that lock, which would admit any path.
+        let _iso = crate::core::data_dir::isolated_data_dir();
         let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let escaped = outside.path().join("secret.txt");
+        std::fs::write(&escaped, "outside the jail").unwrap();
         let mut ext = ClaimExtractor::new("test_5", None);
-        ext.verify_pathjail("/etc/passwd", root.path());
+        ext.verify_pathjail(&escaped.to_string_lossy(), root.path());
         let proof = ext.finalize();
         assert_eq!(proof.summary.failed, 1);
         assert_eq!(
@@ -199,6 +205,7 @@ pub mod tests {
 
     #[test]
     fn combined_extraction_computes_quality() {
+        let _iso = crate::core::data_dir::isolated_data_dir();
         let root = tempfile::tempdir().unwrap();
         let inside = root.path().join("src.rs");
         std::fs::write(&inside, "fn main() {}").unwrap();
